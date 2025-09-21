@@ -3,7 +3,7 @@ REM Cross-platform-friendly Windows runner for Secure Notepad
 REM - Creates a virtualenv in .\.venv if missing
 REM - Installs requirements
 REM - Launches the app
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
 set "VENV_DIR=%SCRIPT_DIR%.venv"
@@ -37,8 +37,21 @@ REM Install requirements
 if exist "%REQ_FILE%" (
   echo [setup] Installing dependencies from requirements.txt
   call "%VENV_DIR%\Scripts\python.exe" -m pip install -r "%REQ_FILE%"
+  if %ERRORLEVEL% NEQ 0 (
+    echo [error] Dependency installation failed with exit code %ERRORLEVEL%.
+    echo.
+    pause
+    exit /b %ERRORLEVEL%
+  )
 )
 
 REM Launch app
 call "%VENV_DIR%\Scripts\python.exe" "%MAIN_PY%"
-exit /b %ERRORLEVEL%
+set "APP_EXIT=%ERRORLEVEL%"
+if %APP_EXIT% NEQ 0 (
+  echo [error] Application exited with code %APP_EXIT%.
+  echo.
+  echo If this window closed too quickly before, you can now review the error above.
+  pause
+)
+exit /b %APP_EXIT%
