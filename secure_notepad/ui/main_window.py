@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QDialog,
 )
 from PySide6.QtCore import QSettings
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from pathlib import Path
 
 from .notes_tab import NotesTab
@@ -59,6 +59,28 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        # Edit menu (improves copy/paste behavior across widgets)
+        edit_menu = menubar.addMenu("&Edit")
+        act_cut = QAction("Cut", self)
+        act_cut.setShortcut(QKeySequence.Cut)
+        act_copy = QAction("Copy", self)
+        act_copy.setShortcut(QKeySequence.Copy)
+        act_paste = QAction("Paste", self)
+        act_paste.setShortcut(QKeySequence.Paste)
+        act_select_all = QAction("Select All", self)
+        act_select_all.setShortcut(QKeySequence.SelectAll)
+
+        act_cut.triggered.connect(lambda: self._edit_invoke("cut"))
+        act_copy.triggered.connect(lambda: self._edit_invoke("copy"))
+        act_paste.triggered.connect(lambda: self._edit_invoke("paste"))
+        act_select_all.triggered.connect(lambda: self._edit_invoke("selectAll"))
+
+        edit_menu.addAction(act_cut)
+        edit_menu.addAction(act_copy)
+        edit_menu.addAction(act_paste)
+        edit_menu.addSeparator()
+        edit_menu.addAction(act_select_all)
+
         view_menu = menubar.addMenu("&View")
         self.theme_light = QAction("Light Theme", self, checkable=True)
         self.theme_dark = QAction("Dark Theme", self, checkable=True)
@@ -95,6 +117,18 @@ class MainWindow(QMainWindow):
             self.theme_dark.setChecked(True)
         else:
             self.theme_light.setChecked(True)
+
+    def _edit_invoke(self, method: str) -> None:
+        """Invoke a standard edit method (cut/copy/paste/selectAll) on the focused widget if available."""
+        w = QApplication.focusWidget()
+        if w is None:
+            return
+        fn = getattr(w, method, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
 
     def _restore_geometry(self) -> None:
         s = QSettings()
