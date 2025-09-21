@@ -12,3 +12,6 @@ secure_notepad/ui/__pycache__/notes_tab.cpython-313.pyc
 secure_notepad/ui/__pycache__/password_dialog.cpython-313.pyc
 secure_notepad/ui/__pycache__/passwords_tab.cpython-313.pyc
 secure_notepad/ui/__pycache__/theme.cpython-313.pyc
+secure_notepad/storage/__pycache__/store.cpython-312.pyc
+secure_notepad/ui/__pycache__/main_window.cpython-312.pyc
+secure_notepad/ui/__pycache__/notes_tab.cpython-312.pyc
