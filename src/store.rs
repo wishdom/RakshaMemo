@@ -15,11 +15,55 @@ use crate::{
     model::{VaultData, now},
 };
 
+/// The live, editable vault. A prepared save may run while `data` is edited.
+/// Callers must run at most one save job per store, complete its receipt before
+/// preparing another, and drain pending jobs before `save`, `import`, or `export`.
 pub struct Store {
     pub data: VaultData,
     path: PathBuf,
     cipher: VaultCipher,
     fingerprint: [u8; 32],
+}
+
+/// An owned snapshot that can be encrypted and committed on a worker thread.
+/// Dropping it also drops its wiping `VaultData` and zeroizing derived key.
+pub struct SaveJob {
+    data: VaultData,
+    path: PathBuf,
+    cipher: VaultCipher,
+    fingerprint: [u8; 32],
+}
+
+/// Successful disk commit metadata, containing no plaintext notes or passwords.
+#[derive(Debug)]
+pub struct SaveReceipt {
+    path: PathBuf,
+    base_fingerprint: [u8; 32],
+    saved_fingerprint: [u8; 32],
+    modified_at: String,
+}
+
+impl SaveJob {
+    /// Commit this snapshot with the same recovery and disk-conflict protection
+    /// as a synchronous save. The original store is untouched on either outcome.
+    pub fn run(mut self) -> Result<SaveReceipt> {
+        let _lock = writer_lock(&self.path)?;
+        let previous = read_unchanged(&self.path, self.fingerprint)?;
+        self.data.meta.modified_at = now();
+        let encrypted = self.cipher.encrypt(&self.data)?;
+        atomic_write(&sibling_path(&self.path, ".bak"), &previous, true)
+            .context("Could not write recovery backup; original vault was preserved")?;
+        // Also catch a non-cooperating program that changed the original
+        // while the backup was being flushed.
+        read_unchanged(&self.path, self.fingerprint)?;
+        atomic_write(&self.path, &encrypted, true).context("Could not save vault")?;
+        Ok(SaveReceipt {
+            path: self.path,
+            base_fingerprint: self.fingerprint,
+            saved_fingerprint: fingerprint(&encrypted),
+            modified_at: self.data.meta.modified_at.clone(),
+        })
+    }
 }
 
 impl Store {
@@ -64,27 +108,36 @@ impl Store {
         sibling_path(&self.path, ".bak")
     }
 
-    /// Does not re-run Argon2 or retain the master password. Each write has a
-    /// fresh OS-random 96-bit AES-GCM nonce.
-    pub fn save(&mut self) -> Result<()> {
-        let _lock = writer_lock(&self.path)?;
-        let previous = self.read_unchanged()?;
-        let old_timestamp = std::mem::replace(&mut self.data.meta.modified_at, now());
-        let result = (|| {
-            let encrypted = self.cipher.encrypt(&self.data)?;
-            atomic_write(&self.backup_path(), &previous, true)
-                .context("Could not write recovery backup; original vault was preserved")?;
-            // Also catch a non-cooperating program that changed the original
-            // while the backup was being flushed.
-            self.read_unchanged()?;
-            atomic_write(&self.path, &encrypted, true).context("Could not save vault")?;
-            self.fingerprint = fingerprint(&encrypted);
-            Ok(())
-        })();
-        if result.is_err() {
-            self.data.meta.modified_at = old_timestamp;
+    /// Take a snapshot without disk I/O, encryption, or key derivation. The
+    /// caller may keep editing `data` while running this job on another thread.
+    /// Apply its receipt before preparing another save for this store.
+    pub fn prepare_save(&self) -> SaveJob {
+        SaveJob {
+            data: self.data.clone(),
+            path: self.path.clone(),
+            cipher: self.cipher.clone(),
+            fingerprint: self.fingerprint,
         }
-        result
+    }
+
+    /// Advance the disk baseline after a successful job. Only save metadata is
+    /// updated; edits made since the snapshot are never replaced by old data.
+    pub fn complete_save(&mut self, receipt: SaveReceipt) -> Result<()> {
+        if self.path != receipt.path || self.fingerprint != receipt.base_fingerprint {
+            bail!(
+                "Save belongs to an older or different vault session; reopen the vault before saving again"
+            );
+        }
+        self.fingerprint = receipt.saved_fingerprint;
+        self.data.meta.modified_at = receipt.modified_at;
+        Ok(())
+    }
+
+    /// Synchronously save after draining pending jobs. Does not re-run Argon2
+    /// or retain the master password. Each write uses a fresh OS-random nonce.
+    pub fn save(&mut self) -> Result<()> {
+        let receipt = self.prepare_save().run()?;
+        self.complete_save(receipt)
     }
 
     /// Export current edits as an independently encrypted snapshot, even when
@@ -125,14 +178,7 @@ impl Store {
     }
 
     fn read_unchanged(&self) -> Result<Vec<u8>> {
-        let bytes = read_bounded(&self.path)
-            .context("Vault was removed or cannot be read; changes were not saved")?;
-        if fingerprint(&bytes) != self.fingerprint {
-            bail!(
-                "Vault changed on disk since it was unlocked. Changes were not saved; reopen the vault before editing again"
-            );
-        }
-        Ok(bytes)
+        read_unchanged(&self.path, self.fingerprint)
     }
 
     fn reserved_path(&self, path: &Path) -> bool {
@@ -159,6 +205,17 @@ impl Store {
             .iter()
             .any(|candidate| same_path(candidate, path))
     }
+}
+
+fn read_unchanged(path: &Path, expected_fingerprint: [u8; 32]) -> Result<Vec<u8>> {
+    let bytes = read_bounded(path)
+        .context("Vault was removed or cannot be read; changes were not saved")?;
+    if fingerprint(&bytes) != expected_fingerprint {
+        bail!(
+            "Vault changed on disk since it was unlocked. Changes were not saved; reopen the vault before editing again"
+        );
+    }
+    Ok(bytes)
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -324,6 +381,144 @@ mod tests {
                 .notes
                 .items
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn background_save_preserves_newer_edits_and_next_save_catches_up() {
+        let (_dir, mut store) = create();
+        store.data.notes.items.push(Note::new("first snapshot"));
+        let original_fingerprint = store.fingerprint;
+        let job = store.prepare_save();
+        let (resume, paused) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            paused.recv().unwrap();
+            job.run()
+        });
+
+        // The live editor remains editable while its snapshot is in flight.
+        store.data.notes.items[0].title = "newer edit".into();
+        store.data.notes.items.push(Note::new("added while saving"));
+        resume.send(()).unwrap();
+        let receipt = worker.join().unwrap().unwrap();
+        assert_eq!(store.fingerprint, original_fingerprint);
+        let snapshot = Store::open(store.path(), PASSWORD).unwrap();
+        assert_eq!(snapshot.data.notes.items.len(), 1);
+        assert_eq!(snapshot.data.notes.items[0].title, "first snapshot");
+
+        store.complete_save(receipt).unwrap();
+        assert_eq!(store.data.notes.items[0].title, "newer edit");
+        assert_eq!(store.data.notes.items[1].title, "added while saving");
+        assert_eq!(store.fingerprint, snapshot.fingerprint);
+        assert_eq!(store.data.meta.modified_at, snapshot.data.meta.modified_at);
+
+        let receipt = std::thread::spawn({
+            let job = store.prepare_save();
+            move || job.run()
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        store.complete_save(receipt).unwrap();
+        let reopened = Store::open(store.path(), PASSWORD).unwrap();
+        assert_eq!(reopened.data.notes.items[0].title, "newer edit");
+        assert_eq!(reopened.data.notes.items[1].title, "added while saving");
+        let backup = Store::open(store.backup_path(), PASSWORD).unwrap();
+        assert_eq!(backup.data.notes.items[0].title, "first snapshot");
+    }
+
+    #[test]
+    fn background_disk_conflict_preserves_edits_and_save_metadata() {
+        let (_dir, mut store) = create();
+        let mut concurrent = Store::open(store.path(), PASSWORD).unwrap();
+        store.data.notes.items.push(Note::new("pending snapshot"));
+        let original_fingerprint = store.fingerprint;
+        let original_timestamp = store.data.meta.modified_at.clone();
+        let job = store.prepare_save();
+        store.data.notes.items[0].title = "newer pending edit".into();
+        concurrent.data.notes.items.push(Note::new("external edit"));
+        concurrent.save().unwrap();
+        let current = fs::read(store.path()).unwrap();
+        let backup = fs::read(store.backup_path()).unwrap();
+
+        assert!(
+            job.run()
+                .unwrap_err()
+                .to_string()
+                .contains("changed on disk")
+        );
+        assert_eq!(fs::read(store.path()).unwrap(), current);
+        assert_eq!(fs::read(store.backup_path()).unwrap(), backup);
+        assert_eq!(store.fingerprint, original_fingerprint);
+        assert_eq!(store.data.meta.modified_at, original_timestamp);
+        assert_eq!(store.data.notes.items[0].title, "newer pending edit");
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_overwrite_a_completed_save() {
+        let (_dir, mut store) = create();
+        store.data.notes.items.push(Note::new("stale snapshot"));
+        let stale = store.prepare_save();
+        store.data.notes.items[0].title = "committed snapshot".into();
+        store
+            .complete_save(store.prepare_save().run().unwrap())
+            .unwrap();
+        let committed = fs::read(store.path()).unwrap();
+        assert!(stale.run().is_err());
+        assert_eq!(fs::read(store.path()).unwrap(), committed);
+        // The failed stale job did not invalidate the current store's baseline.
+        store.save().unwrap();
+    }
+
+    #[test]
+    fn receipt_cannot_change_a_different_vault_with_the_same_baseline() {
+        let (dir, store) = create();
+        let other_path = dir.path().join("other.json");
+        fs::copy(store.path(), &other_path).unwrap();
+        let mut other = Store::open(&other_path, PASSWORD).unwrap();
+        let original_fingerprint = other.fingerprint;
+        let original_timestamp = other.data.meta.modified_at.clone();
+        let receipt = store.prepare_save().run().unwrap();
+        assert!(other.complete_save(receipt).is_err());
+        assert_eq!(other.fingerprint, original_fingerprint);
+        assert_eq!(other.data.meta.modified_at, original_timestamp);
+        other.save().unwrap();
+    }
+
+    #[test]
+    fn stale_receipt_cannot_change_a_reopened_vault_baseline() {
+        let (_dir, store) = create();
+        let receipt = store.prepare_save().run().unwrap();
+        let mut reopened = Store::open(store.path(), PASSWORD).unwrap();
+        let original_fingerprint = reopened.fingerprint;
+        let original_timestamp = reopened.data.meta.modified_at.clone();
+        assert!(reopened.complete_save(receipt).is_err());
+        assert_eq!(reopened.fingerprint, original_fingerprint);
+        assert_eq!(reopened.data.meta.modified_at, original_timestamp);
+        reopened.save().unwrap();
+    }
+
+    #[test]
+    fn dropping_an_owned_snapshot_leaves_live_data_and_key_usable() {
+        let (_dir, mut store) = create();
+        store.data.notes.items.push(Note::new("still present"));
+        let before = fs::read(store.path()).unwrap();
+        let mut job = store.prepare_save();
+        job.data.notes.items[0].title = "discarded snapshot".into();
+        // SaveJob owns VaultData (whose Drop wipes every plaintext field) and
+        // VaultCipher (whose key is Zeroizing), rather than borrowed UI state.
+        drop(job);
+        assert_eq!(fs::read(store.path()).unwrap(), before);
+        assert_eq!(store.data.notes.items[0].title, "still present");
+        store.save().unwrap();
+        assert_eq!(
+            Store::open(store.path(), PASSWORD)
+                .unwrap()
+                .data
+                .notes
+                .items[0]
+                .title,
+            "still present"
         );
     }
 

@@ -5,7 +5,8 @@ A native Rust desktop app for encrypted notes and passwords. The interface uses 
 ## Features
 
 - Multiple notes with automatic saving, search, rename, and deletion.
-- Password entries with search, categories, extra notes, masked display, and clipboard actions.
+- A compact password table with search, categories, extra notes, masked passwords, and clipboard actions.
+- Automatic saving for notes and password edits, with encryption and disk writes performed in the background.
 - Password generation with configurable length and character sets.
 - Argon2id key derivation and AES-256-GCM authenticated encryption.
 - Manual lock and configurable inactivity lock (five minutes by default).
@@ -29,7 +30,7 @@ sudo apt-get install build-essential pkg-config libwayland-dev libxkbcommon-dev 
 
 The Linux desktop also needs a working graphics/display session and, for native file dialogs, an XDG desktop portal supported by your desktop environment. See the [eframe documentation](https://docs.rs/eframe/0.36.2/eframe/) for platform details.
 
-For Japanese, Chinese, and Korean text on Linux, install Noto Sans CJK (`fonts-noto-cjk` on Debian/Ubuntu). The app uses an installed system font as a fallback; Windows and macOS also use available system CJK fonts.
+For Japanese, Chinese, and Korean text on Linux, install Noto Sans CJK (`fonts-noto-cjk` on Debian/Ubuntu). The app uses an installed CJK font for both Latin and CJK interface text; Windows and macOS also use available system CJK fonts.
 
 From the repository directory:
 
@@ -49,7 +50,15 @@ The result is `target/release/secure-notepad.exe` on Windows or `target/release/
 
 On first launch, create a master password of at least 12 characters. Existing Python vault passwords still work even if they are shorter. Keep your password safe: there is no password recovery.
 
-Notes save automatically after a short pause in typing, with periodic saves during continuous editing. **Save** or `Ctrl/Cmd+S` saves immediately. Password entry dialogs require **Save entry**; inactivity locking discards an unsaved password draft. Save failures are shown in the app, and pending edits stay in memory instead of silently closing or locking.
+Every note or password change queues an automatic encrypted save. You can keep typing while a save runs; edits made during that save are included in the next one. The save indicator shows when everything has reached disk. There is no **Save** button.
+
+Password entries appear in a compact table, including a preview of **Extra information**. Click a title, username, password, category, or extra-information value to edit it directly; every change saves automatically. **Enter** or **Escape** finishes a cell without reverting saved changes. Extra information expands into a multiline editor: **Enter** inserts a new line, and **Ctrl/Cmd+Enter** finishes. Rows stay in place while you type. Each password has an eye button to show or hide it; leaving the page or locking hides revealed values again.
+
+Search covers titles, usernames, categories, and extra information. Use **Columns** to show or hide optional metadata. Use an entry's **Edit** button for the full-page editor; **Back to passwords** returns to the table. Account details and a large extra-information field appear side by side on wider windows, with a single scrolling page on smaller windows.
+
+Categories are optional groups for filtering accounts. Type a category while editing an entry to create it; choose **Manage categories…** inside the category filter to rename groups or remove unused ones. Adding a password creates and saves an **Untitled** entry immediately, ready to fill in. Delete an unwanted entry from the table. Save failures are shown in the app, and pending edits stay in memory instead of silently closing or locking.
+
+**Settings** groups appearance, startup/security, and vault backups in one scrollable page. Preferences save automatically. Automatic locking accepts 0–1440 minutes; 0 disables it. An installed CJK font is used for both Latin and CJK interface text where available, keeping mixed-script text on one baseline.
 
 For a separate test or portable vault, pass a path explicitly:
 
@@ -89,11 +98,11 @@ Rust preferences are stored as `settings.json` next to the default vault. The pr
 
 ## Backups and imports
 
-Export encrypts a snapshot of the notes and saved password entries currently in memory, including pending note edits, without changing the active vault file. Unsaved password dialog drafts must be saved as entries first. Keep exported copies somewhere independent of the computer and retain the password that was used for each export.
+Export encrypts a snapshot of the notes and password entries currently in memory, including edits waiting to finish saving, without changing the active vault file. Keep exported copies somewhere independent of the computer and retain the password that was used for each export.
 
 If saving fails, such as when another program changed the vault on disk, export an encrypted copy to preserve your pending work. You can then explicitly discard local edits and lock, and reopen the vault. The export remains independent of the file that caused the conflict.
 
-**Settings → Import encrypted vault** replaces the current vault; it does not merge entries. The app asks for the imported vault's password and verifies its contents before replacing the current vault. The imported file's password becomes the active vault password.
+**Settings → Import vault…** replaces the current vault; it does not merge entries. The app asks for the imported vault's password and verifies its contents before replacing the current vault. The imported file's password becomes the active vault password.
 
 Each save keeps the previous encrypted file beside the vault as `vault.json.bak`. This is one rolling recovery copy: the next successful save or import overwrites it. Import also keeps a separate `vault.json.pre-import-<uuid>.bak` file that survives later autosaves and uses the previous vault's password. These pre-import copies are not automatically pruned; manage them as encrypted backups.
 

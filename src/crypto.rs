@@ -74,6 +74,7 @@ struct Envelope {
 }
 
 /// Retains a derived key, never the master password. The key is wiped on drop.
+#[derive(Clone)]
 pub(crate) struct VaultCipher {
     key: Zeroizing<[u8; 32]>,
     salt: Vec<u8>,
