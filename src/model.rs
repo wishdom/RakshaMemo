@@ -24,6 +24,10 @@ pub struct Note {
     pub title: String,
     pub content: String,
     pub updated_at: String,
+    /// Pinned notes stay at the top of the list. Omitted from the file when
+    /// false, so unpinned notes are stored exactly as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     #[serde(flatten)]
     pub unknown_fields: UnknownFields,
 }
@@ -35,6 +39,7 @@ impl Default for Note {
             title: "Untitled".into(),
             content: String::new(),
             updated_at: now(),
+            pinned: false,
             unknown_fields: UnknownFields::new(),
         }
     }

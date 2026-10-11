@@ -91,7 +91,7 @@ fn clicking_a_theme_option_applies_it_and_persists_preferences() {
     click_text(&mut app, &context, "Light");
     assert!(!app.settings.dark_mode);
     assert_eq!(context.theme(), egui::Theme::Light);
-    let saved = secure_notepad::settings::Settings::load(&app.settings_path).unwrap();
+    let saved = rakshamemo::settings::Settings::load(&app.settings_path).unwrap();
     assert!(!saved.dark_mode);
     assert_eq!(saved.auto_lock_minutes, app.settings.auto_lock_minutes);
 }

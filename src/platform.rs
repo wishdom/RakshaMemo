@@ -3,10 +3,11 @@ use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-const APP_NAME: &str = "Secure Notepad";
+pub const APP_NAME: &str = "RakshaMemo";
+/// The app's previous name. Its data folder matches Python's
+/// platformdirs.user_data_dir("Secure Notepad", "Wishdom").
+const LEGACY_APP_NAME: &str = "Secure Notepad";
 
-/// Match Python's platformdirs.user_data_dir("Secure Notepad", "Wishdom")
-/// so upgrading does not create an empty vault beside the existing one.
 pub fn default_vault_path() -> Result<PathBuf> {
     Ok(data_directory()?.join("vault.json"))
 }
@@ -19,7 +20,60 @@ fn data_directory() -> Result<PathBuf> {
     let base = dirs::data_local_dir().context("Could not locate your user data directory")?;
     #[cfg(target_os = "windows")]
     let base = base.join("Wishdom");
-    Ok(base.join(APP_NAME))
+    Ok(choose_data_directory(&base))
+}
+
+/// Keep using the folder from before the rename while it holds the only
+/// vault, so upgrading never shows an empty vault or moves encrypted files.
+fn choose_data_directory(base: &Path) -> PathBuf {
+    let current = base.join(APP_NAME);
+    let legacy = base.join(LEGACY_APP_NAME);
+    if !current.join("vault.json").exists() && legacy.join("vault.json").exists() {
+        legacy
+    } else {
+        current
+    }
+}
+
+/// Whether the user's Windows session is locked (Win+L or the lock screen).
+/// Other platforms report `false`; the app detects sleep separately.
+pub fn session_locked() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::RemoteDesktop::{
+            WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK, WTSFreeMemory,
+            WTSINFOEXW, WTSQuerySessionInformationW, WTSSessionInfoEx,
+        };
+        let mut buffer = std::ptr::null_mut();
+        let mut bytes = 0u32;
+        // SAFETY: on success Windows allocates `buffer` (a WTSINFOEXW of
+        // `bytes` bytes), which is read only after a size check and then
+        // released with WTSFreeMemory exactly once.
+        unsafe {
+            if WTSQuerySessionInformationW(
+                WTS_CURRENT_SERVER_HANDLE,
+                WTS_CURRENT_SESSION,
+                WTSSessionInfoEx,
+                &mut buffer,
+                &mut bytes,
+            ) == 0
+                || buffer.is_null()
+            {
+                return false;
+            }
+            let locked = bytes as usize >= std::mem::size_of::<WTSINFOEXW>() && {
+                let info = &*(buffer as *const WTSINFOEXW);
+                info.Level == 1
+                    && info.Data.WTSInfoExLevel1.SessionFlags as u32 == WTS_SESSIONSTATE_LOCK
+            };
+            WTSFreeMemory(buffer.cast());
+            locked
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
 }
 
 /// Keep this guard alive for as long as the vault can be edited. The lock file
@@ -67,7 +121,7 @@ impl SingleInstance {
             .open(PathBuf::from(lock_name))
             .context("Could not open the vault lock file")?;
         FileExt::try_lock_exclusive(&file).context(
-            "Could not lock this vault. Another Secure Notepad window may already have it open. Close that window and try again.",
+            "Could not lock this vault. Another RakshaMemo window may already have it open. Close that window and try again.",
         )?;
         Ok(Self { _file: file })
     }
@@ -88,6 +142,15 @@ pub mod startup {
 
     pub fn set_enabled(enabled: bool) -> Result<()> {
         backend::set_enabled(enabled)
+    }
+
+    /// Replace a registration made under the app's previous name, so sign-in
+    /// launches this executable. Does nothing when no old registration exists.
+    pub fn migrate_legacy() -> Result<()> {
+        if backend::legacy_is_enabled()? {
+            backend::set_enabled(true)?;
+        }
+        Ok(())
     }
 
     fn executable_text(executable: &Path) -> Result<&str> {
@@ -142,7 +205,7 @@ pub mod startup {
         }
         quoted.push('"');
         Ok(format!(
-            "[Desktop Entry]\nType=Application\nVersion=1.0\nName=Secure Notepad\nComment=Open your encrypted vault at login\nExec={quoted}\nTerminal=false\nHidden=false\nX-GNOME-Autostart-enabled=true\n"
+            "[Desktop Entry]\nType=Application\nVersion=1.0\nName=RakshaMemo\nComment=Open your encrypted vault at login\nExec={quoted}\nTerminal=false\nHidden=false\nX-GNOME-Autostart-enabled=true\n"
         ))
     }
 
@@ -159,7 +222,7 @@ pub mod startup {
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
              <plist version=\"1.0\"><dict>\n\
-             <key>Label</key><string>com.wishdom.secure-notepad</string>\n\
+             <key>Label</key><string>com.wishdom.rakshamemo</string>\n\
              <key>ProgramArguments</key><array><string>{escaped}</string></array>\n\
              <key>RunAtLoad</key><true/>\n\
              <key>LimitLoadToSessionType</key><string>Aqua</string>\n\
@@ -174,20 +237,31 @@ pub mod startup {
         use winreg::{RegKey, enums::*};
 
         const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-        const VALUE_NAME: &str = "Secure Notepad";
+        const VALUE_NAME: &str = "RakshaMemo";
+        const LEGACY_VALUE_NAME: &str = "Secure Notepad";
 
         pub(super) fn is_enabled() -> Result<bool> {
             let current_user = RegKey::predef(HKEY_CURRENT_USER);
-            registry_is_enabled(&current_user, RUN_KEY)
+            Ok(registry_is_enabled(&current_user, RUN_KEY)?
+                || registry_has_value(&current_user, RUN_KEY, LEGACY_VALUE_NAME)?)
+        }
+
+        pub(super) fn legacy_is_enabled() -> Result<bool> {
+            let current_user = RegKey::predef(HKEY_CURRENT_USER);
+            registry_has_value(&current_user, RUN_KEY, LEGACY_VALUE_NAME)
         }
 
         fn registry_is_enabled(root: &RegKey, subkey: &str) -> Result<bool> {
+            registry_has_value(root, subkey, VALUE_NAME)
+        }
+
+        fn registry_has_value(root: &RegKey, subkey: &str, name: &str) -> Result<bool> {
             let key = match root.open_subkey_with_flags(subkey, KEY_READ) {
                 Ok(key) => key,
                 Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
                 Err(error) => return Err(error).context("Could not read startup preferences"),
             };
-            match key.get_raw_value(VALUE_NAME) {
+            match key.get_raw_value(name) {
                 Ok(_) => Ok(true),
                 Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
                 Err(error) => Err(error).context("Could not read the startup registration"),
@@ -212,19 +286,25 @@ pub mod startup {
                     .context("Could not open your startup preferences")?;
                 key.set_value(VALUE_NAME, &command)
                     .context("Could not enable launch at login")?;
+                delete_value(&key, LEGACY_VALUE_NAME)?;
             } else {
                 let key = match root.open_subkey_with_flags(subkey, KEY_SET_VALUE) {
                     Ok(key) => key,
                     Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
                     Err(error) => return Err(error).context("Could not open startup preferences"),
                 };
-                match key.delete_value(VALUE_NAME) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => return Err(error).context("Could not disable launch at login"),
-                }
+                delete_value(&key, VALUE_NAME)?;
+                delete_value(&key, LEGACY_VALUE_NAME)?;
             }
             Ok(())
+        }
+
+        fn delete_value(key: &RegKey, name: &str) -> Result<()> {
+            match key.delete_value(name) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).context("Could not disable launch at login"),
+            }
         }
 
         #[cfg(test)]
@@ -240,7 +320,7 @@ pub mod startup {
 
             impl TestRegistry {
                 fn new() -> Self {
-                    let path = format!(r"Software\SecureNotepadTest-{}", uuid::Uuid::new_v4());
+                    let path = format!(r"Software\RakshaMemoTest-{}", uuid::Uuid::new_v4());
                     let (root, _) = RegKey::predef(HKEY_CURRENT_USER)
                         .create_subkey(&path)
                         .unwrap();
@@ -258,7 +338,7 @@ pub mod startup {
             fn registry_enable_and_disable_preserve_unrelated_entries() {
                 let registry = TestRegistry::new();
                 let subkey = "StartupTest";
-                let executable = Path::new(r"C:\Applications\Secure Notepad\secure-notepad.exe");
+                let executable = Path::new(r"C:\Applications\RakshaMemo\rakshamemo.exe");
                 assert!(!registry_is_enabled(&registry.root, subkey).unwrap());
                 set_registry_enabled(&registry.root, subkey, None).unwrap();
                 assert!(registry.root.open_subkey(subkey).is_err());
@@ -270,10 +350,7 @@ pub mod startup {
                     .open_subkey_with_flags(subkey, KEY_ALL_ACCESS)
                     .unwrap();
                 let command: String = key.get_value(VALUE_NAME).unwrap();
-                assert_eq!(
-                    command,
-                    r#""C:\Applications\Secure Notepad\secure-notepad.exe""#
-                );
+                assert_eq!(command, r#""C:\Applications\RakshaMemo\rakshamemo.exe""#);
                 assert_eq!(key.get_raw_value(VALUE_NAME).unwrap().vtype, REG_SZ);
                 key.set_value("Other application", &"preserved").unwrap();
 
@@ -293,8 +370,8 @@ pub mod startup {
             fn registry_detects_and_replaces_stale_registration() {
                 let registry = TestRegistry::new();
                 let subkey = "StartupTest";
-                let old = Path::new(r"C:\Old location\secure-notepad.exe");
-                let new = Path::new(r"C:\New location\secure-notepad.exe");
+                let old = Path::new(r"C:\Old location\rakshamemo.exe");
+                let new = Path::new(r"C:\New location\rakshamemo.exe");
                 set_registry_enabled(&registry.root, subkey, Some(old)).unwrap();
                 assert!(registry_is_enabled(&registry.root, subkey).unwrap());
                 set_registry_enabled(&registry.root, subkey, Some(new)).unwrap();
@@ -325,6 +402,25 @@ pub mod startup {
                 set_registry_enabled(&registry.root, subkey, None).unwrap();
                 assert!(!registry_is_enabled(&registry.root, subkey).unwrap());
             }
+
+            #[test]
+            fn enabling_replaces_and_disabling_removes_the_old_name() {
+                let registry = TestRegistry::new();
+                let subkey = "StartupTest";
+                let (key, _) = registry.root.create_subkey(subkey).unwrap();
+                key.set_value(LEGACY_VALUE_NAME, &r#""C:\Old\secure-notepad.exe""#)
+                    .unwrap();
+                assert!(registry_has_value(&registry.root, subkey, LEGACY_VALUE_NAME).unwrap());
+                let executable = Path::new(r"C:\Applications\RakshaMemo\rakshamemo.exe");
+                set_registry_enabled(&registry.root, subkey, Some(executable)).unwrap();
+                assert!(registry_is_enabled(&registry.root, subkey).unwrap());
+                assert!(!registry_has_value(&registry.root, subkey, LEGACY_VALUE_NAME).unwrap());
+
+                key.set_value(LEGACY_VALUE_NAME, &"stale").unwrap();
+                set_registry_enabled(&registry.root, subkey, None).unwrap();
+                assert!(!registry_is_enabled(&registry.root, subkey).unwrap());
+                assert!(!registry_has_value(&registry.root, subkey, LEGACY_VALUE_NAME).unwrap());
+            }
         }
     }
 
@@ -333,18 +429,40 @@ pub mod startup {
         use super::*;
         use std::{fs, io::ErrorKind, path::PathBuf};
 
-        fn entry_path() -> Result<PathBuf> {
+        fn entry_path_for(id: &str) -> Result<PathBuf> {
             #[cfg(target_os = "linux")]
             {
                 Ok(dirs::config_dir()
                     .context("Could not locate your configuration directory")?
-                    .join("autostart/com.wishdom.secure-notepad.desktop"))
+                    .join(format!("autostart/{id}.desktop")))
             }
             #[cfg(target_os = "macos")]
             {
                 Ok(dirs::home_dir()
                     .context("Could not locate your home directory")?
-                    .join("Library/LaunchAgents/com.wishdom.secure-notepad.plist"))
+                    .join(format!("Library/LaunchAgents/{id}.plist")))
+            }
+        }
+
+        fn entry_path() -> Result<PathBuf> {
+            entry_path_for("com.wishdom.rakshamemo")
+        }
+
+        fn legacy_entry_path() -> Result<PathBuf> {
+            entry_path_for("com.wishdom.secure-notepad")
+        }
+
+        pub(super) fn legacy_is_enabled() -> Result<bool> {
+            legacy_entry_path()?
+                .try_exists()
+                .context("Could not read the startup registration")
+        }
+
+        fn remove(path: PathBuf) -> Result<()> {
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).context("Could not disable launch at login"),
             }
         }
 
@@ -357,24 +475,20 @@ pub mod startup {
         }
 
         pub(super) fn is_enabled() -> Result<bool> {
-            entry_path()?
+            Ok(entry_path()?
                 .try_exists()
-                .context("Could not read the startup registration")
+                .context("Could not read the startup registration")?
+                || legacy_is_enabled()?)
         }
 
         pub(super) fn set_enabled(enabled: bool) -> Result<()> {
-            let path = entry_path()?;
             if enabled {
-                crate::settings::write_atomic(&path, entry_contents()?.as_bytes())
+                crate::settings::write_atomic(&entry_path()?, entry_contents()?.as_bytes())
                     .context("Could not enable launch at login")?;
             } else {
-                match fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => return Err(error).context("Could not disable launch at login"),
-                }
+                remove(entry_path()?)?;
             }
-            Ok(())
+            remove(legacy_entry_path()?)
         }
     }
 
@@ -383,6 +497,10 @@ pub mod startup {
         use super::*;
 
         pub(super) fn is_enabled() -> Result<bool> {
+            Ok(false)
+        }
+
+        pub(super) fn legacy_is_enabled() -> Result<bool> {
             Ok(false)
         }
 
@@ -401,7 +519,7 @@ pub mod startup {
 
         #[test]
         fn windows_command_quotes_spaces_and_does_not_invoke_a_shell() {
-            let executable = path_with_name("Secure Notepad & app.exe");
+            let executable = path_with_name("RakshaMemo & app.exe");
             assert_eq!(
                 windows_command(&executable).unwrap(),
                 format!("\"{}\"", executable.display())
@@ -457,18 +575,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vault_path_matches_legacy_python_location() {
+    fn default_paths_share_one_data_folder_named_for_the_app() {
         let base = dirs::data_local_dir().unwrap();
         #[cfg(target_os = "windows")]
         let base = base.join("Wishdom");
-        assert_eq!(
-            default_vault_path().unwrap(),
-            base.join("Secure Notepad/vault.json")
+        let vault = default_vault_path().unwrap();
+        assert!(
+            [APP_NAME, LEGACY_APP_NAME]
+                .iter()
+                .any(|name| vault == base.join(name).join("vault.json"))
         );
         assert_eq!(
             default_settings_path().unwrap(),
-            base.join("Secure Notepad/settings.json")
+            vault.with_file_name("settings.json")
         );
+    }
+
+    #[test]
+    fn an_existing_vault_under_the_old_name_keeps_being_used() {
+        let base = tempfile::tempdir().unwrap();
+        let current = base.path().join(APP_NAME);
+        let legacy = base.path().join(LEGACY_APP_NAME);
+        assert_eq!(choose_data_directory(base.path()), current, "Fresh install");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("vault.json"), "encrypted").unwrap();
+        assert_eq!(choose_data_directory(base.path()), legacy);
+        // Once a vault exists under the new name, it wins.
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("vault.json"), "encrypted").unwrap();
+        assert_eq!(choose_data_directory(base.path()), current);
+    }
+
+    #[test]
+    fn session_query_succeeds_without_side_effects() {
+        // The value depends on the machine; this checks the call is safe.
+        let _ = session_locked();
     }
 
     #[test]

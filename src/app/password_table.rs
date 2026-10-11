@@ -3,7 +3,7 @@
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use secure_notepad::model::PasswordItem;
+use rakshamemo::model::PasswordItem;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use zeroize::Zeroizing;
@@ -285,14 +285,15 @@ pub(super) fn show(
     query: &mut String,
     category: &mut String,
     state: &mut TableState,
+    focus_search: bool,
 ) -> Vec<Action> {
-    style::passwords(ui);
+    style::page(ui);
     let mut actions = Vec::new();
     let mut filters_changed = false;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
         let search_width = (ui.available_width() - 505.0).clamp(200.0, 440.0);
-        filters_changed |= ui
+        let search = ui
             .add(
                 egui::TextEdit::singleline(query)
                     .hint_text("Search passwords…")
@@ -300,8 +301,13 @@ pub(super) fn show(
                     .min_size(egui::vec2(0.0, 32.0))
                     .desired_width(search_width),
             )
-            .on_hover_text("Search titles, usernames, categories, and extra information")
-            .changed();
+            .on_hover_text(
+                "Search titles, usernames, categories, and extra information (Ctrl/Cmd+F)",
+            );
+        if focus_search {
+            search.request_focus();
+        }
+        filters_changed |= search.changed();
         egui::ComboBox::from_id_salt("password_category")
             .width(155.0)
             .selected_text(if category.is_empty() {
@@ -342,7 +348,10 @@ pub(super) fn show(
             category.clear();
             filters_changed = true;
         }
-        if style::primary_button(ui, "+ New password").clicked() {
+        if style::primary_button(ui, "+ New password")
+            .on_hover_text("Ctrl/Cmd+N")
+            .clicked()
+        {
             actions.push(Action::New);
         }
     });
@@ -1056,7 +1065,17 @@ mod tests {
                 focused: true,
                 ..Default::default()
             },
-            |ui| actions.extend(show(ui, items, &[], &mut query, &mut category, state)),
+            |ui| {
+                actions.extend(show(
+                    ui,
+                    items,
+                    &[],
+                    &mut query,
+                    &mut category,
+                    state,
+                    false,
+                ))
+            },
         );
         output.textures_delta.clear();
         (output, actions)

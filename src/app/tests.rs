@@ -1,4 +1,5 @@
 use super::*;
+use rakshamemo::model::Note;
 
 const PASSWORD: &str = "application test passphrase";
 
@@ -13,7 +14,12 @@ pub(super) fn fixture() -> (tempfile::TempDir, Notepad, egui::Context) {
     let app = Notepad {
         vault_path,
         settings_path: directory.path().join("vault.json.settings.json"),
-        settings: Settings::default(),
+        // Locking when away depends on the machine's session state; the
+        // dedicated test below drives it directly.
+        settings: Settings {
+            lock_when_away: false,
+            ..Settings::default()
+        },
         _instance: instance,
         custom_path: true,
         store: Some(store),
@@ -38,6 +44,7 @@ pub(super) fn fixture() -> (tempfile::TempDir, Notepad, egui::Context) {
         pending_save: None,
         revision: 0,
         save_failed: false,
+        transient: Transient::default(),
     };
     let context = egui::Context::default();
     style::apply(&context, app.settings.dark_mode);
@@ -64,6 +71,8 @@ fn open_password_entry(app: &mut Notepad) {
         },
         show_password: true,
         generator: generator::Options::default(),
+        strength: None,
+        focus_title: false,
     };
     app.store
         .as_mut()
@@ -397,11 +406,14 @@ fn idle_lock_runs_without_input_and_respects_the_disabled_setting() {
 }
 
 #[test]
-fn autosave_queues_immediately_and_an_older_completion_keeps_newer_edits_dirty() {
+fn autosave_waits_for_a_typing_pause_and_an_older_completion_keeps_newer_edits_dirty() {
     let (_directory, mut app, context) = fixture();
     add_pending_note(&mut app, "First edit");
     app.tick(&context);
-    assert!(app.pending_save.is_some(), "No typing pause is required");
+    assert!(app.pending_save.is_none(), "Typing defers the save");
+    app.last_edit -= AUTOSAVE_IDLE;
+    app.tick(&context);
+    assert!(app.pending_save.is_some(), "A pause starts the save");
     let first_revision = app.pending_save.as_ref().unwrap().revision;
     app.store.as_mut().unwrap().data.notes.items[0].content = "Newer edit".into();
     app.changed();
@@ -424,6 +436,7 @@ fn autosave_queues_immediately_and_an_older_completion_keeps_newer_edits_dirty()
         "First edit"
     );
 
+    app.last_edit -= AUTOSAVE_IDLE;
     app.tick(&context);
     assert!(app.pending_save.is_some());
     assert!(app.complete_pending_save(true));
@@ -956,4 +969,141 @@ fn leaving_an_inline_category_edit_registers_only_the_finished_category() {
             .kind,
         "Private group"
     );
+}
+
+#[test]
+fn unlocking_and_locking_keep_the_app_theme() {
+    let (_directory, mut app, context) = fixture();
+    let themed = context.style_of(context.theme()).visuals.panel_fill;
+    assert_ne!(themed, egui::Visuals::dark().panel_fill);
+    forget_editor_state(&context);
+    assert_eq!(context.style_of(context.theme()).visuals.panel_fill, themed);
+    app.finish_lock(&context);
+    assert_eq!(context.style_of(context.theme()).visuals.panel_fill, themed);
+}
+
+#[test]
+fn continuous_typing_still_saves_and_leaving_the_window_saves_at_once() {
+    let (_directory, mut app, _context) = fixture();
+    assert_eq!(app.autosave_wait(true), None, "Nothing to save");
+    add_pending_note(&mut app, "Typed without pausing");
+    let wait = app.autosave_wait(true).unwrap();
+    assert!(wait > Duration::ZERO && wait <= AUTOSAVE_IDLE);
+    assert_eq!(app.autosave_wait(false), Some(Duration::ZERO));
+    // A keystroke just now, but the first unsaved edit is old: save anyway.
+    app.dirty_since = Some(Instant::now() - AUTOSAVE_MAX_DELAY);
+    app.changed();
+    assert_eq!(app.autosave_wait(true), Some(Duration::ZERO));
+}
+
+#[test]
+fn stepping_away_locks_only_when_enabled_and_saves_first() {
+    let (_directory, mut app, context) = fixture();
+    // Skip the OS session query so the result does not depend on the machine.
+    app.transient.session_checked = Some(Instant::now());
+    let asleep = |app: &mut Notepad| {
+        app.transient.last_tick = Some(SystemTime::now() - SLEEP_GAP - Duration::from_secs(1));
+    };
+    asleep(&mut app);
+    app.tick(&context);
+    assert!(app.store.is_some(), "Disabled setting never locks");
+
+    app.settings.lock_when_away = true;
+    app.tick(&context);
+    assert!(app.store.is_some(), "Regular ticks are not sleep");
+    add_pending_note(&mut app, "Saved before sleeping");
+    asleep(&mut app);
+    app.tick(&context);
+    assert!(
+        app.store.is_none(),
+        "A long gap between ticks means the computer slept"
+    );
+    assert_eq!(
+        Store::open(&app.vault_path, PASSWORD)
+            .unwrap()
+            .data
+            .notes
+            .items[0]
+            .content,
+        "Saved before sleeping"
+    );
+}
+
+#[test]
+fn minimizing_the_window_locks_when_enabled() {
+    let (_directory, mut app, context) = fixture();
+    app.settings.lock_when_away = true;
+    app.transient.session_checked = Some(Instant::now());
+    let mut input = egui::RawInput::default();
+    input
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .minimized = Some(true);
+    context.begin_pass(input);
+    app.tick(&context);
+    context.end_pass().textures_delta.clear();
+    assert!(app.store.is_none());
+}
+
+#[test]
+fn shortcuts_create_and_search_notes_on_the_notes_page() {
+    let (_directory, mut app, context) = fixture();
+    app.transient.shortcut = Some(Shortcut::New);
+    input_frame(&context, Vec::new(), |ui| app.notes_ui(ui));
+    assert_eq!(app.store.as_ref().unwrap().data.notes.items.len(), 1);
+    assert!(
+        app.transient.shortcut.is_none(),
+        "The page consumes the shortcut"
+    );
+
+    app.transient.shortcut = Some(Shortcut::Find);
+    input_frame(&context, Vec::new(), |ui| app.notes_ui(ui));
+    input_frame(&context, Vec::new(), |ui| app.notes_ui(ui));
+    assert!(context.memory(|memory| memory.has_focus(egui::Id::new("note_search"))));
+
+    // Pinning keeps a note first even when another was edited later.
+    add_pending_note(&mut app, "Edited later");
+    let data = &mut app.store.as_mut().unwrap().data;
+    data.notes.items[0].pinned = true;
+    data.notes.items[1].updated_at = "2099-01-01T00:00:00Z".into();
+    let output = input_frame(&context, Vec::new(), |ui| app.notes_ui(ui));
+    let titles: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if ["Untitled", "Test note"].contains(&text.galley.text()) => {
+                Some(text.pos.y)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(titles.len() >= 2 && titles[0] < titles[1]);
+}
+
+#[test]
+fn enter_in_a_new_note_title_moves_to_the_body_without_a_newline() {
+    let (_directory, mut app, context) = fixture();
+    app.transient.shortcut = Some(Shortcut::New);
+    input_frame(&context, Vec::new(), |ui| app.notes_ui(ui));
+    input_frame(&context, Vec::new(), |ui| app.notes_ui(ui));
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    input_frame(
+        &context,
+        vec![egui::Event::Text("Groceries".into()), key(egui::Key::Enter)],
+        |ui| app.notes_ui(ui),
+    );
+    input_frame(&context, Vec::new(), |ui| app.notes_ui(ui));
+    input_frame(&context, vec![egui::Event::Text("eggs".into())], |ui| {
+        app.notes_ui(ui)
+    });
+    let note = &app.store.as_ref().unwrap().data.notes.items[0];
+    assert_eq!(note.title, "Groceries");
+    assert_eq!(note.content, "eggs");
 }

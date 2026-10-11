@@ -18,5 +18,6 @@ __pycache__/
 /vault.json.*
 /vault_*.json
 /secure-notepad-backup*.json
+/rakshamemo-backup*.json
 /settings.json
 /backups/

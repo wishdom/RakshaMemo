@@ -2,21 +2,25 @@
 
 mod app;
 mod fonts;
+mod icon;
 
 use anyhow::{Context, Result, bail};
-use secure_notepad::{platform, settings::Settings};
+use rakshamemo::{platform, settings::Settings};
 use std::path::PathBuf;
 
 fn main() {
     if let Err(error) = run() {
         rfd::MessageDialog::new()
-            .set_title("Secure Notepad")
+            .set_title("RakshaMemo")
             .set_description(format!("{error:#}"))
             .set_level(rfd::MessageLevel::Error)
             .show();
         std::process::exit(1);
     }
 }
+
+/// Large enough for the taskbar on high-DPI screens; the OS scales it down.
+const WINDOW_ICON_SIZE: u32 = 64;
 
 fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
@@ -26,10 +30,10 @@ fn run() -> Result<()> {
             PathBuf::from(args.next().context("--vault requires a file path")?),
             true,
         ),
-        Some(_) => bail!("Usage: secure-notepad [--vault PATH]"),
+        Some(_) => bail!("Usage: rakshamemo [--vault PATH]"),
     };
     if args.next().is_some() {
-        bail!("Usage: secure-notepad [--vault PATH]");
+        bail!("Usage: rakshamemo [--vault PATH]");
     }
     let vault_path = std::path::absolute(vault_path)?;
     let instance = platform::SingleInstance::acquire(&vault_path)?;
@@ -50,11 +54,16 @@ fn run() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size(settings.window_size)
-            .with_min_inner_size([760.0, 520.0]),
+            .with_min_inner_size([760.0, 520.0])
+            .with_icon(eframe::egui::IconData {
+                rgba: icon::rgba(WINDOW_ICON_SIZE),
+                width: WINDOW_ICON_SIZE,
+                height: WINDOW_ICON_SIZE,
+            }),
         ..Default::default()
     };
     eframe::run_native(
-        "Secure Notepad",
+        "RakshaMemo",
         options,
         Box::new(move |cc| {
             fonts::install(&cc.egui_ctx);

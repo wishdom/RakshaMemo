@@ -1,9 +1,9 @@
 [package]
-name = "secure-notepad"
-version = "2.0.0"
+name = "rakshamemo"
+version = "2.1.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Local encrypted notes and passwords, written in Rust"
+description = "RakshaMemo: local encrypted notes and passwords, written in Rust"
 
 [dependencies]
 anyhow = "1"
@@ -27,11 +27,16 @@ sha2 = "0.10"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 zeroize = { version = "1", features = ["derive"] }
+zxcvbn = "3"
 
 [target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_RemoteDesktop"] }
 winreg = "0.55"
 
 [profile.release]
 lto = "thin"
 strip = true
+
+[build-dependencies]
+embed-resource = "3"
 

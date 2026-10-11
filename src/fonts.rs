@@ -4,13 +4,12 @@ use eframe::egui::{Context, FontData, FontDefinitions, FontFamily};
 use std::path::PathBuf;
 
 pub fn install(ctx: &Context) {
-    let candidates = candidates();
-    for path in candidates {
+    for (path, index) in candidates() {
         if let Ok(bytes) = std::fs::read(path) {
             let mut fonts = FontDefinitions::default();
-            fonts
-                .font_data
-                .insert("system-cjk".into(), FontData::from_owned(bytes).into());
+            let mut data = FontData::from_owned(bytes);
+            data.index = index;
+            fonts.font_data.insert("system-cjk".into(), data.into());
             // Mixing egui's Latin face with a CJK fallback gives each script
             // different ascent/line-height metrics. One primary face keeps
             // mixed strings (e.g. Japanese room names with Latin numbers) on
@@ -33,16 +32,25 @@ pub fn install(ctx: &Context) {
     }
 }
 
-fn candidates() -> Vec<PathBuf> {
+/// Font files, each with the face to use inside a collection (`.ttc`).
+fn candidates() -> Vec<(PathBuf, u32)> {
     #[cfg(target_os = "windows")]
     {
         let fonts =
             PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into()))
                 .join("Fonts");
-        ["YuGothM.ttc", "msgothic.ttc", "msyh.ttc", "malgun.ttf"]
-            .into_iter()
-            .map(|name| fonts.join(name))
-            .collect()
+        // Prefer the interface faces (Yu Gothic UI, Microsoft YaHei UI). The
+        // document faces at index 0 have a tall descent that draws text about
+        // 5 px above centre in buttons and fields, and a mid-line "…".
+        [
+            ("YuGothM.ttc", 1),
+            ("msgothic.ttc", 0),
+            ("msyh.ttc", 1),
+            ("malgun.ttf", 0),
+        ]
+        .into_iter()
+        .map(|(name, index)| (fonts.join(name), index))
+        .collect()
     }
     #[cfg(target_os = "macos")]
     {
@@ -52,7 +60,7 @@ fn candidates() -> Vec<PathBuf> {
             "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         ]
         .into_iter()
-        .map(PathBuf::from)
+        .map(|path| (PathBuf::from(path), 0))
         .collect()
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -63,7 +71,7 @@ fn candidates() -> Vec<PathBuf> {
             "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         ]
         .into_iter()
-        .map(PathBuf::from)
+        .map(|path| (PathBuf::from(path), 0))
         .collect()
     }
 }
@@ -78,7 +86,7 @@ mod tests {
         // No font is bundled: headless systems without an installed CJK face
         // deliberately keep egui's defaults. Exercise real font metrics when
         // the same system font used by the native app is available.
-        if !candidates().iter().any(|path| path.is_file()) {
+        if !candidates().iter().any(|(path, _)| path.is_file()) {
             return;
         }
         let ctx = Context::default();
@@ -101,6 +109,45 @@ mod tests {
                 "mixed-script baselines differ at {size}px"
             );
         }
+        ctx.end_pass().textures_delta.clear();
+    }
+
+    #[test]
+    fn installed_face_centres_latin_text_and_keeps_ellipsis_on_the_baseline() {
+        if !candidates().iter().any(|(path, _)| path.is_file()) {
+            return;
+        }
+        let ctx = Context::default();
+        install(&ctx);
+        ctx.begin_pass(RawInput::default());
+        // Buttons and fields centre each row, so the drawn ink must sit near
+        // the row's middle; "…" belongs on the baseline in Latin labels.
+        let ink = |text: &str| {
+            let galley = ctx.fonts_mut(|fonts| {
+                fonts.layout_no_wrap(text.into(), FontId::proportional(15.0), Color32::WHITE)
+            });
+            let row = &galley.rows[0];
+            let (top, bottom) = row
+                .glyphs
+                .iter()
+                .filter(|glyph| !glyph.uv_rect.is_nothing())
+                .fold((f32::MAX, f32::MIN), |(top, bottom), glyph| {
+                    let glyph_top = glyph.pos.y + glyph.uv_rect.offset.y;
+                    (
+                        top.min(glyph_top),
+                        bottom.max(glyph_top + glyph.uv_rect.size.y),
+                    )
+                });
+            (top, bottom, row.glyphs[0].pos.y, row.height())
+        };
+        let (top, bottom, _, height) = ink("Lock Hx");
+        let offset = (top + bottom) / 2.0 - height / 2.0;
+        assert!(offset.abs() <= 1.5, "text is {offset} px off centre");
+        let (_, bottom, baseline, _) = ink("…");
+        assert!(
+            (bottom - baseline).abs() <= 1.5,
+            "ellipsis is not on the baseline"
+        );
         ctx.end_pass().textures_delta.clear();
     }
 }

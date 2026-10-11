@@ -15,6 +15,11 @@ use crate::{
     model::{VaultData, now},
 };
 
+/// At most one saved version per interval; the newest few are kept.
+const VERSION_INTERVAL: chrono::TimeDelta = chrono::TimeDelta::minutes(30);
+const MAX_VERSIONS: usize = 20;
+const VERSION_FORMAT: &str = "%Y%m%dT%H%M%S%.3fZ";
+
 /// The live, editable vault. A prepared save may run while `data` is edited.
 /// Callers must run at most one save job per store, complete its receipt before
 /// preparing another, and drain pending jobs before `save`, `import`, or `export`.
@@ -34,6 +39,38 @@ pub struct SaveJob {
     fingerprint: [u8; 32],
 }
 
+/// Checks the current password and derives a new key, which takes a few
+/// seconds of Argon2 work, so callers run it on a worker thread. Both
+/// passwords and the copied key are wiped when it is dropped.
+pub struct PasswordChange {
+    cipher: VaultCipher,
+    current: zeroize::Zeroizing<String>,
+    new: zeroize::Zeroizing<String>,
+}
+
+/// A verified key for the new password, ready to install with
+/// [`Store::apply_password_change`].
+pub struct NewKey(VaultCipher);
+
+impl PasswordChange {
+    pub fn run(self) -> Result<NewKey> {
+        if !self.cipher.matches(&self.current)? {
+            bail!("The current password is not correct");
+        }
+        Ok(NewKey(VaultCipher::new(&self.new)?))
+    }
+}
+
+/// An encrypted earlier state of the vault that can be restored by
+/// importing it with the password it was saved under.
+#[derive(Clone, Debug)]
+pub struct BackupVersion {
+    pub path: PathBuf,
+    pub saved_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The rolling copy of the state before the most recent save.
+    pub previous_save: bool,
+}
+
 /// Successful disk commit metadata, containing no plaintext notes or passwords.
 #[derive(Debug)]
 pub struct SaveReceipt {
@@ -49,6 +86,8 @@ impl SaveJob {
     pub fn run(mut self) -> Result<SaveReceipt> {
         let _lock = writer_lock(&self.path)?;
         let previous = read_unchanged(&self.path, self.fingerprint)?;
+        keep_version(&self.path, &previous, chrono::Utc::now())
+            .context("Could not keep a backup version; original vault was preserved")?;
         self.data.meta.modified_at = now();
         let encrypted = self.cipher.encrypt(&self.data)?;
         atomic_write(&sibling_path(&self.path, ".bak"), &previous, true)
@@ -140,6 +179,69 @@ impl Store {
         self.complete_save(receipt)
     }
 
+    pub fn prepare_password_change(&self, current: &str, new: &str) -> PasswordChange {
+        PasswordChange {
+            cipher: self.cipher.clone(),
+            current: zeroize::Zeroizing::new(current.to_owned()),
+            new: zeroize::Zeroizing::new(new.to_owned()),
+        }
+    }
+
+    /// Re-encrypt the vault under a new key from [`PasswordChange::run`].
+    /// Drain pending save jobs first. The state before the change remains in
+    /// the rolling backup, encrypted with the old password.
+    pub fn apply_password_change(&mut self, key: NewKey) -> Result<()> {
+        let _lock = writer_lock(&self.path)?;
+        let previous = self.read_unchanged()?;
+        let mut snapshot = self.data.clone();
+        snapshot.meta.modified_at = now();
+        let encrypted = key.0.encrypt(&snapshot)?;
+        atomic_write(&self.backup_path(), &previous, true)
+            .context("Could not write recovery backup; password was not changed")?;
+        self.read_unchanged()?;
+        atomic_write(&self.path, &encrypted, true).context("Could not save the new password")?;
+        self.data.meta.modified_at = std::mem::take(&mut snapshot.meta.modified_at);
+        self.cipher = key.0;
+        self.fingerprint = fingerprint(&encrypted);
+        Ok(())
+    }
+
+    /// Earlier encrypted states, newest first: the rolling previous save,
+    /// then the periodic versions. Pre-import backups are not listed.
+    pub fn versions(&self) -> Vec<BackupVersion> {
+        let mut versions = Vec::new();
+        let backup = self.backup_path();
+        if let Ok(metadata) = fs::metadata(&backup)
+            && metadata.is_file()
+        {
+            versions.push(BackupVersion {
+                saved_at: metadata.modified().ok().map(Into::into),
+                path: backup,
+                previous_save: true,
+            });
+        }
+        versions.extend(list_versions(&versions_directory(&self.path)));
+        versions
+    }
+
+    /// Delete the rolling backup and periodic versions, for example after a
+    /// password change, since they still open with the old password.
+    /// Permanent pre-import backups are kept. Returns how many were removed.
+    pub fn remove_versions(&self) -> Result<usize> {
+        let mut removed = 0;
+        for version in self.versions() {
+            match fs::remove_file(&version.path) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("Could not remove {}", version.path.display()));
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     /// Export current edits as an independently encrypted snapshot, even when
     /// a disk conflict prevents saving the active vault.
     pub fn export(&mut self, destination: impl AsRef<Path>) -> Result<()> {
@@ -195,7 +297,11 @@ impl Store {
                     .to_lowercase()
             ))
         });
+        let in_versions = path
+            .parent()
+            .is_some_and(|parent| same_path(parent, &versions_directory(&self.path)));
         permanent_backup
+            || in_versions
             || [
                 self.path.clone(),
                 self.backup_path(),
@@ -205,6 +311,64 @@ impl Store {
             .iter()
             .any(|candidate| same_path(candidate, path))
     }
+}
+
+fn versions_directory(vault: &Path) -> PathBuf {
+    sibling_path(vault, ".versions")
+}
+
+/// Periodic versions, newest first. Names are UTC timestamps, so sorting by
+/// name is sorting by time; unrelated files are ignored.
+fn list_versions(directory: &Path) -> Vec<BackupVersion> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut versions: Vec<_> = entries
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let stem = path.file_name()?.to_str()?.strip_suffix(".json")?;
+            let saved_at = chrono::NaiveDateTime::parse_from_str(stem, VERSION_FORMAT)
+                .ok()?
+                .and_utc();
+            Some(BackupVersion {
+                path,
+                saved_at: Some(saved_at),
+                previous_save: false,
+            })
+        })
+        .collect();
+    versions.sort_by_key(|version| std::cmp::Reverse(version.saved_at));
+    versions
+}
+
+/// Keep `bytes` (the encrypted state before a save) as a version when the
+/// newest version is older than the interval, then prune the oldest.
+fn keep_version(vault: &Path, bytes: &[u8], now: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    let directory = versions_directory(vault);
+    let existing = list_versions(&directory);
+    if existing
+        .first()
+        .and_then(|newest| newest.saved_at)
+        .is_some_and(|saved_at| now - saved_at < VERSION_INTERVAL)
+    {
+        return Ok(());
+    }
+    reject_symlink(&directory)?;
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&directory)?;
+    let name = format!("{}.json", now.format(VERSION_FORMAT));
+    atomic_write(&directory.join(name), bytes, false)?;
+    // Pruning is best effort: a leftover old version is harmless.
+    for old in existing.iter().skip(MAX_VERSIONS - 1) {
+        let _ = fs::remove_file(&old.path);
+    }
+    Ok(())
 }
 
 fn read_unchanged(path: &Path, expected_fingerprint: [u8; 32]) -> Result<Vec<u8>> {
@@ -322,7 +486,7 @@ fn atomic_write(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
     reject_symlink(path)?;
     let parent = path.parent().context("File has no parent directory")?;
     let mut temporary = tempfile::Builder::new()
-        .prefix(".secure-notepad-")
+        .prefix(".rakshamemo-")
         .tempfile_in(parent)?;
     #[cfg(unix)]
     {
@@ -520,6 +684,81 @@ mod tests {
                 .title,
             "still present"
         );
+    }
+
+    #[test]
+    fn saves_keep_periodic_versions_and_prune_the_oldest() {
+        let (_dir, mut store) = create();
+        let original = fs::read(store.path()).unwrap();
+        store.save().unwrap();
+        let versions = list_versions(&versions_directory(store.path()));
+        assert_eq!(versions.len(), 1, "First save keeps a version");
+        assert_eq!(fs::read(&versions[0].path).unwrap(), original);
+        store.save().unwrap();
+        assert_eq!(
+            list_versions(&versions_directory(store.path())).len(),
+            1,
+            "Saves within the interval reuse the newest version"
+        );
+
+        let start = chrono::Utc::now() + VERSION_INTERVAL;
+        for step in 0..(MAX_VERSIONS as i32 + 5) {
+            let at = start + VERSION_INTERVAL * step;
+            keep_version(store.path(), b"encrypted", at).unwrap();
+        }
+        let versions = list_versions(&versions_directory(store.path()));
+        assert_eq!(versions.len(), MAX_VERSIONS);
+        assert!(
+            versions
+                .windows(2)
+                .all(|pair| pair[0].saved_at > pair[1].saved_at)
+        );
+        // The listing includes the rolling backup first, then the versions.
+        let listed = store.versions();
+        assert!(listed[0].previous_save);
+        assert_eq!(listed.len(), MAX_VERSIONS + 1);
+        assert_eq!(store.remove_versions().unwrap(), MAX_VERSIONS + 1);
+        assert!(store.versions().is_empty());
+        let exported = versions_directory(store.path()).join("export.json");
+        assert!(
+            store.export(exported).is_err(),
+            "Versions folder is reserved"
+        );
+    }
+
+    #[test]
+    fn password_change_requires_the_current_password_and_reencrypts() {
+        let (_dir, mut store) = create();
+        store
+            .data
+            .notes
+            .items
+            .push(Note::new("kept across the change"));
+        store.save().unwrap();
+        let before = fs::read(store.path()).unwrap();
+        assert!(
+            store
+                .prepare_password_change("wrong password", "a new passphrase here")
+                .run()
+                .is_err()
+        );
+        assert_eq!(fs::read(store.path()).unwrap(), before);
+
+        let key = store
+            .prepare_password_change(PASSWORD, "a new passphrase here")
+            .run()
+            .unwrap();
+        store.apply_password_change(key).unwrap();
+        assert!(Store::open(store.path(), PASSWORD).is_err());
+        let reopened = Store::open(store.path(), "a new passphrase here").unwrap();
+        assert_eq!(reopened.data.notes.items[0].title, "kept across the change");
+        // The rolling backup holds the pre-change state under the old password.
+        assert!(Store::open(store.backup_path(), PASSWORD).is_ok());
+        // Later saves keep working with the new key.
+        store.data.notes.items[0].title = "after the change".into();
+        store.save().unwrap();
+        let reopened = Store::open(store.path(), "a new passphrase here").unwrap();
+        assert_eq!(reopened.data.notes.items[0].title, "after the change");
     }
 
     #[test]

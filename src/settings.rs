@@ -13,6 +13,21 @@ pub struct Settings {
     /// Zero disables idle locking; otherwise this is a number of minutes.
     pub auto_lock_minutes: u32,
     pub window_size: [f32; 2],
+    /// Lock when the window is minimized, the computer sleeps, or (on
+    /// Windows) the user locks their session.
+    pub lock_when_away: bool,
+    pub clock_24h: bool,
+    pub note_sort: NoteSort,
+}
+
+/// Pinned notes always come first; this orders the rest.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteSort {
+    #[default]
+    RecentlyEdited,
+    Title,
+    Created,
 }
 
 impl Default for Settings {
@@ -21,6 +36,9 @@ impl Default for Settings {
             dark_mode: true,
             auto_lock_minutes: 5,
             window_size: [1100.0, 740.0],
+            lock_when_away: true,
+            clock_24h: true,
+            note_sort: NoteSort::default(),
         }
     }
 }

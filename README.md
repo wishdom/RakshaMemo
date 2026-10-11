@@ -1,18 +1,20 @@
-# Secure Notepad
+# RakshaMemo
 
-A native Rust desktop app for encrypted notes and passwords. The interface uses egui/eframe; there is no Python, Qt, webview, or JavaScript runtime.
+*Rakṣā* is Sanskrit for "protection". RakshaMemo (formerly Secure Notepad) is a native Rust desktop app for encrypted notes and passwords. The interface uses egui/eframe; there is no Python, Qt, webview, or JavaScript runtime.
 
 ## Features
 
-- Multiple notes with automatic saving, search, rename, and deletion.
+- Multiple notes with automatic saving, search, rename, deletion, pinning, and sorting (last edited, title, or newest first).
 - A compact password table with search, categories, extra notes, masked passwords, and clipboard actions.
 - Automatic saving for notes and password edits, with encryption and disk writes performed in the background.
-- Password generation with configurable length and character sets.
+- Password generation with configurable length and character sets, and a strength meter (zxcvbn) for entries and master passwords.
 - Argon2id key derivation and AES-256-GCM authenticated encryption.
-- Manual lock and configurable inactivity lock (five minutes by default).
+- Manual lock, configurable inactivity lock (five minutes by default), and locking when the window is minimized, the computer sleeps, or (on Windows) the session is locked.
+- Master password changes, and periodic encrypted backup versions you can restore from Settings.
 - Copied credentials expire from the clipboard after 30 seconds if the clipboard still contains the copied value.
 - Encrypted export/import, with authentication before an import replaces your current vault.
-- Light/dark themes and persistent preferences.
+- Light/dark themes with a one-click toolbar switch, a date and time display (24- or 12-hour), and persistent preferences.
+- Keyboard shortcuts: **Ctrl/Cmd+N** new note or password, **Ctrl/Cmd+F** search, **Ctrl/Cmd+L** lock, **Ctrl/Cmd+S** save now, **Escape** closes dialogs.
 - An optional **Launch at sign-in** setting for opening the app at OS startup.
 - A single running instance per vault to avoid concurrent writes.
 
@@ -46,11 +48,11 @@ To build an executable:
 cargo build --release --locked
 ```
 
-The result is `target/release/secure-notepad.exe` on Windows or `target/release/secure-notepad` on Linux/macOS. The executable uses the platform's normal system libraries; Rust and Cargo are needed for building, not for launching an already-built executable.
+The result is `target/release/rakshamemo.exe` on Windows (with its icon and version details embedded) or `target/release/rakshamemo` on Linux/macOS. If `CARGO_TARGET_DIR` is set, the build is under that directory instead of `target/`. The executable uses the platform's normal system libraries; Rust and Cargo are needed for building, not for launching an already-built executable.
 
 On first launch, create a master password of at least 12 characters. Existing Python vault passwords still work even if they are shorter. Keep your password safe: there is no password recovery.
 
-Every note or password change queues an automatic encrypted save. You can keep typing while a save runs; edits made during that save are included in the next one. The save indicator shows when everything has reached disk. There is no **Save** button.
+Changes are saved automatically once you pause typing for a moment (at most every five seconds during continuous typing, and immediately when you switch to another window, lock, or close). Encryption and disk writes run in the background; edits made during a save are included in the next one. The save indicator shows when everything has reached disk. There is no **Save** button; **Ctrl/Cmd+S** saves at once.
 
 Password entries appear in a compact table, including a preview of **Extra information**. Click a title, username, password, category, or extra-information value to edit it directly; every change saves automatically. **Enter** or **Escape** finishes a cell without reverting saved changes. Extra information expands into a multiline editor: **Enter** inserts a new line, and **Ctrl/Cmd+Enter** finishes. Rows stay in place while you type. Each password has an eye button to show or hide it; leaving the page or locking hides revealed values again.
 
@@ -59,6 +61,8 @@ Search covers titles, usernames, categories, and extra information. Use **Column
 Categories are optional groups for filtering accounts. Type a category while editing an entry to create it; choose **Manage categories…** inside the category filter to rename groups or remove unused ones. Adding a password creates and saves an **Untitled** entry immediately, ready to fill in. Delete an unwanted entry from the table. Save failures are shown in the app, and pending edits stay in memory instead of silently closing or locking.
 
 **Settings** groups appearance, startup/security, and vault backups in one scrollable page. Preferences save automatically. Automatic locking accepts 0–1440 minutes; 0 disables it. An installed CJK font is used for both Latin and CJK interface text where available, keeping mixed-script text on one baseline.
+
+Notes can be pinned with the star button (or by right-clicking a note in the list) to keep them at the top. **Enter** in a note's title moves to its body.
 
 For a separate test or portable vault, pass a path explicitly:
 
@@ -76,6 +80,8 @@ Open **Settings** and enable **Launch at sign-in**. The option is off by default
 - **Linux:** creates an XDG autostart `.desktop` entry for your desktop session.
 - **macOS:** creates a per-user LaunchAgent.
 
+If launch at sign-in was enabled under the old name, Secure Notepad, RakshaMemo replaces that registration with its own the first time it starts with the default vault.
+
 Build the release executable and put it in a permanent location before enabling startup. Registration records that executable's absolute path, so moving or deleting it breaks automatic launch. After moving it, launch the app from its new location and turn startup off and back on. Disable the option before uninstalling. Your OS's startup/login-item controls may also disable an entry.
 
 ## Migrating from Python
@@ -84,13 +90,15 @@ The Rust app reads the original version-1 encrypted vault format directly, inclu
 
 Before upgrading, export an encrypted backup from the Python app and close it. Do not run the Python and Rust versions against the same vault at the same time: the Python version does not participate in the Rust app's instance lock.
 
-The default vault locations match the Python app:
+New installs keep their vault in a folder named after the app:
 
 | Platform | Vault location |
 | --- | --- |
-| Windows | `%LOCALAPPDATA%\Wishdom\Secure Notepad\vault.json` |
-| macOS | `~/Library/Application Support/Secure Notepad/vault.json` |
-| Linux | `${XDG_DATA_HOME:-~/.local/share}/Secure Notepad/vault.json` |
+| Windows | `%LOCALAPPDATA%\Wishdom\RakshaMemo\vault.json` |
+| macOS | `~/Library/Application Support/RakshaMemo/vault.json` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/RakshaMemo/vault.json` |
+
+If there is no vault there but one exists in the previous `Secure Notepad` folder (the Python app's location, and the Rust app's before the rename), RakshaMemo keeps using that folder. Nothing is moved, so upgrading never shows an empty vault.
 
 The old README omitted `Wishdom` from the Windows path. If the app offers to create a vault instead of unlocking your existing one, stop and check the data location or import your encrypted backup. OS accounts and overridden data-directory environment variables can change the resolved path.
 
@@ -104,7 +112,9 @@ If saving fails, such as when another program changed the vault on disk, export 
 
 **Settings → Import vault…** replaces the current vault; it does not merge entries. The app asks for the imported vault's password and verifies its contents before replacing the current vault. The imported file's password becomes the active vault password.
 
-Each save keeps the previous encrypted file beside the vault as `vault.json.bak`. This is one rolling recovery copy: the next successful save or import overwrites it. Import also keeps a separate `vault.json.pre-import-<uuid>.bak` file that survives later autosaves and uses the previous vault's password. These pre-import copies are not automatically pruned; manage them as encrypted backups.
+Each save keeps the previous encrypted file beside the vault as `vault.json.bak`. This is one rolling recovery copy: the next successful save or import overwrites it. Saves also keep an encrypted version in `vault.json.versions/` at most every 30 minutes, retaining the latest 20. **Settings → Restore a previous version** lists these; restoring asks for the password that version was saved with and works like an import, so your current vault is backed up first.
+
+**Settings → Change password…** re-encrypts the vault after checking the current password. By default it also deletes the rolling backup and saved versions, because they still open with the old password; permanent pre-import backups are kept. Import also keeps a separate `vault.json.pre-import-<uuid>.bak` file that survives later autosaves and uses the previous vault's password. These pre-import copies are not automatically pruned; manage them as encrypted backups.
 
 If the current vault cannot be opened, close the app and copy the vault and backup files to a safe location. Restore a copy of the desired backup as `vault.json`, then unlock with the password used by that backup.
 
@@ -117,6 +127,8 @@ If the current vault cannot be opened, close the app and copy the vault and back
 - Atomic file replacement protects against partially written vaults. It does not replace independent backups or guarantee survival of disk failure. POSIX vault files use user-only permissions; Windows uses the current user's data directory and its inherited access controls.
 - Imports reject oversized vaults (over 32 MiB), unsupported formats, and excessive key-derivation parameters before processing them. External vault changes are detected before saving so a stale window cannot silently overwrite another version.
 - The app does not provide cloud synchronization or send vault contents to a server. Encryption protects stored files; it cannot protect an unlocked vault on a compromised computer.
+- Password strength estimates use zxcvbn and only analyse the first 100 characters. Its intermediate results contain password fragments, so only the score and advice are kept, and only recalculated when the password changes.
+- Session-lock detection uses the Windows WTS API. On macOS and Linux, RakshaMemo detects sleep (a gap in its once-a-minute timer) and minimizing, but not a screen lock without sleep.
 - A forgotten password cannot be recovered. Keep encrypted backups and a separate safe record of your master password.
 
 ## Development

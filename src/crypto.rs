@@ -153,6 +153,18 @@ impl VaultCipher {
         ))
     }
 
+    /// Whether `password` derives this vault's key. Re-runs Argon2 with the
+    /// stored salt and parameters; neither key is kept beyond the comparison.
+    pub(crate) fn matches(&self, password: &str) -> Result<bool> {
+        let key = derive_key(password, &self.salt, &self.params)?;
+        // Compare without an early exit, so timing reveals nothing.
+        let difference = key
+            .iter()
+            .zip(self.key.iter())
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b));
+        Ok(difference == 0)
+    }
+
     pub(crate) fn encrypt(&self, data: &VaultData) -> Result<Vec<u8>> {
         let plaintext =
             Zeroizing::new(serde_json::to_vec(data).context("Could not serialize vault")?);
@@ -241,6 +253,14 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn matches_only_the_password_that_derived_the_key() {
+        let cipher = VaultCipher::new("correct horse battery staple").unwrap();
+        assert!(cipher.matches("correct horse battery staple").unwrap());
+        assert!(!cipher.matches("correct horse battery stapler").unwrap());
+        assert!(!cipher.matches("").unwrap());
     }
 
     #[test]

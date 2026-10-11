@@ -1,5 +1,5 @@
 use eframe::egui::{self, RichText};
-use secure_notepad::generator;
+use rakshamemo::generator;
 use zeroize::Zeroize;
 
 use super::{EntryEditor, Notepad, style};
@@ -12,7 +12,7 @@ impl Notepad {
         ui: &mut egui::Ui,
         editor: &mut EntryEditor,
     ) -> bool {
-        style::passwords(ui);
+        style::page(ui);
         let mut back = false;
         ui.horizontal(|ui| {
             back = ui.button("Back to passwords").clicked();
@@ -78,6 +78,18 @@ impl Notepad {
         back
     }
 
+    fn generate_password(&mut self, editor: &mut EntryEditor, edited: &mut bool) {
+        match generator::generate(&editor.generator) {
+            Ok(password) => {
+                editor.item.password.zeroize();
+                editor.item.password = password;
+                editor.refresh_strength();
+                *edited = true;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn password_account_fields(
         &mut self,
         ui: &mut egui::Ui,
@@ -92,13 +104,15 @@ impl Notepad {
                 ui.spacing_mut().item_spacing = egui::vec2(10.0, 8.0);
 
                 field_label(ui, "Title");
-                *edited |= ui
-                    .add(
-                        single_line(&mut editor.item.title)
-                            .id_salt((&editor.item.id, "title"))
-                            .hint_text("Account or service name"),
-                    )
-                    .changed();
+                let title = ui.add(
+                    single_line(&mut editor.item.title)
+                        .id_salt((&editor.item.id, "title"))
+                        .hint_text("Untitled — account or service name"),
+                );
+                if std::mem::take(&mut editor.focus_title) {
+                    title.request_focus();
+                }
+                *edited |= title.changed();
 
                 ui.add_space(8.0);
                 field_label(ui, "Username / email");
@@ -112,14 +126,24 @@ impl Notepad {
 
                 ui.add_space(8.0);
                 field_label(ui, "Password");
-                *edited |= ui
+                if ui
                     .add(
                         single_line(&mut editor.item.password)
                             .id_salt((&editor.item.id, "password"))
                             .password(!editor.show_password),
                     )
-                    .changed();
+                    .changed()
+                {
+                    *edited = true;
+                    editor.refresh_strength();
+                }
                 ui.horizontal_wrapped(|ui| {
+                    if style::primary_button(ui, "Generate")
+                        .on_hover_text("Replace with a random password using the options below")
+                        .clicked()
+                    {
+                        self.generate_password(editor, edited);
+                    }
                     ui.checkbox(&mut editor.show_password, "Show password");
                     if ui
                         .add_enabled(
@@ -141,7 +165,12 @@ impl Notepad {
                     }
                 });
 
-                egui::CollapsingHeader::new("Generate a random password")
+                if let Some(strength) = &editor.strength {
+                    ui.add_space(2.0);
+                    style::strength_meter(ui, strength);
+                }
+
+                egui::CollapsingHeader::new("Password generator options")
                     .id_salt((&editor.item.id, "generator"))
                     .show(ui, |ui| {
                         ui.add(
@@ -154,14 +183,7 @@ impl Notepad {
                             ui.checkbox(&mut editor.generator.symbols, "Symbols");
                         });
                         if style::primary_button(ui, "Generate password").clicked() {
-                            match generator::generate(&editor.generator) {
-                                Ok(password) => {
-                                    editor.item.password.zeroize();
-                                    editor.item.password = password;
-                                    *edited = true;
-                                }
-                                Err(error) => self.error = Some(error.to_string()),
-                            }
+                            self.generate_password(editor, edited);
                         }
                     });
 

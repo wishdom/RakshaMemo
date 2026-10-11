@@ -1,5 +1,5 @@
 use eframe::egui::{self, RichText};
-use secure_notepad::platform;
+use rakshamemo::platform;
 use zeroize::Zeroizing;
 
 use super::{Dialog, Notepad, style};
@@ -25,9 +25,15 @@ impl Notepad {
                         ui.selectable_value(&mut dark, false, "Light");
                         ui.selectable_value(&mut dark, true, "Dark");
                     });
-                    if dark != self.settings.dark_mode {
-                        self.settings.dark_mode = dark;
-                        style::apply(ui.ctx(), dark);
+                    self.set_dark_mode(ui.ctx(), dark);
+                    row_separator(ui);
+                    let mut clock_24h = self.settings.clock_24h;
+                    setting_row(ui, "Clock", "How the time appears at the top of the window.", |ui| {
+                        ui.selectable_value(&mut clock_24h, true, "24-hour");
+                        ui.selectable_value(&mut clock_24h, false, "12-hour");
+                    });
+                    if clock_24h != self.settings.clock_24h {
+                        self.settings.clock_24h = clock_24h;
                         self.persist_settings();
                     }
                 });
@@ -37,7 +43,7 @@ impl Notepad {
                     let description = if self.custom_path {
                         "Available when using the default vault location."
                     } else {
-                        "Open Secure Notepad when you sign in. Your vault starts locked."
+                        "Open RakshaMemo when you sign in. Your vault starts locked."
                     };
                     setting_row(ui, "Launch at sign-in", description, |ui| {
                         if ui
@@ -85,6 +91,31 @@ impl Notepad {
                         },
                     );
                     row_separator(ui);
+                    let away = if cfg!(target_os = "windows") {
+                        "Lock when the window is minimized, the computer sleeps, or you lock Windows."
+                    } else {
+                        "Lock when the window is minimized or the computer sleeps."
+                    };
+                    setting_row(ui, "Lock when away", away, |ui| {
+                        if ui
+                            .checkbox(&mut self.settings.lock_when_away, "Lock automatically")
+                            .changed()
+                        {
+                            self.persist_settings();
+                        }
+                    });
+                    row_separator(ui);
+                    setting_row(
+                        ui,
+                        "Master password",
+                        "Re-encrypt your vault with a new password. You need the current one.",
+                        |ui| {
+                            if ui.button("Change password…").clicked() {
+                                self.dialog = Some(Dialog::ChangePassword(Box::default()));
+                            }
+                        },
+                    );
+                    row_separator(ui);
                     ui.label(RichText::new("Clipboard protection").strong());
                     ui.weak("Copied values are cleared after 30 seconds if the clipboard has not changed.");
                 });
@@ -108,13 +139,33 @@ impl Notepad {
                         |ui| {
                             if style::danger_button(ui, "Import vault…").clicked()
                                 && self.save_now()
-                                && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Encrypted vault", &["json", "bak"])
-                                    .pick_file()
+                                && let Some(path) = {
+                                    let path = rfd::FileDialog::new()
+                                        .add_filter("Encrypted vault", &["json", "bak"])
+                                        .pick_file();
+                                    self.after_blocking_dialog();
+                                    path
+                                }
                             {
                                 self.dialog = Some(Dialog::Import {
                                     path,
                                     password: Zeroizing::new(String::new()),
+                                });
+                            }
+                        },
+                    );
+                    row_separator(ui);
+                    setting_row(
+                        ui,
+                        "Restore a previous version",
+                        "Go back to an earlier encrypted state of this vault.",
+                        |ui| {
+                            if ui.button("Choose a version…").clicked()
+                                && let Some(store) = &self.store
+                            {
+                                self.dialog = Some(Dialog::Versions {
+                                    versions: store.versions(),
+                                    selected: None,
                                 });
                             }
                         },
@@ -136,7 +187,7 @@ impl Notepad {
                         });
                 });
 
-                ui.weak("Secure Notepad 2.0 · Ctrl/Cmd+L locks your vault.");
+                ui.weak(concat!("RakshaMemo ", env!("CARGO_PKG_VERSION"), " · Ctrl/Cmd+N new · Ctrl/Cmd+F search · Ctrl/Cmd+L lock"));
                 ui.add_space(12.0);
             });
     }
