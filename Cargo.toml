@@ -1,0 +1,36 @@
+[package]
+name = "secure-notepad"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Local encrypted notes and passwords, written in Rust"
+
+[dependencies]
+anyhow = "1"
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+aes = { version = "0.8", features = ["zeroize"] }
+ghash = { version = "0.5", features = ["zeroize"] }
+polyval = { version = "0.6", features = ["zeroize"] }
+argon2 = { version = "0.5", features = ["zeroize"] }
+arboard = { version = "3.6", default-features = false }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "accesskit"] }
+fs2 = "0.4"
+rand = "0.8"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[profile.release]
+lto = "thin"
+strip = true
+

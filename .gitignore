@@ -1,17 +1,22 @@
-# --- Python --------------------------------------------------------
+# Rust build output (Cargo.lock is committed for reproducible app builds).
+/target/
+*.pdb
+
+# Local editors and OS metadata.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Leftovers from the Python version.
 .venv/
-secure_notepad/__pycache__/__init__.cpython-313.pyc
-secure_notepad/crypto/__pycache__/__init__.cpython-313.pyc
-secure_notepad/crypto/__pycache__/crypto.cpython-313.pyc
-secure_notepad/storage/__pycache__/__init__.cpython-313.pyc
-secure_notepad/storage/__pycache__/store.cpython-313.pyc
-secure_notepad/ui/__pycache__/__init__.cpython-313.pyc
-secure_notepad/ui/__pycache__/auth_dialog.cpython-313.pyc
-secure_notepad/ui/__pycache__/main_window.cpython-313.pyc
-secure_notepad/ui/__pycache__/notes_tab.cpython-313.pyc
-secure_notepad/ui/__pycache__/password_dialog.cpython-313.pyc
-secure_notepad/ui/__pycache__/passwords_tab.cpython-313.pyc
-secure_notepad/ui/__pycache__/theme.cpython-313.pyc
-secure_notepad/storage/__pycache__/store.cpython-312.pyc
-secure_notepad/ui/__pycache__/main_window.cpython-312.pyc
-secure_notepad/ui/__pycache__/notes_tab.cpython-312.pyc
+__pycache__/
+*.py[cod]
+
+# Local vault copies and settings; never commit personal data.
+/vault.json
+/vault.json.*
+/vault_*.json
+/secure-notepad-backup*.json
+/settings.json
+/backups/
