@@ -40,15 +40,17 @@ From the repository directory:
 cargo run --release --locked
 ```
 
-Alternatively, run `run.bat` on Windows or `bash run.sh` on Linux/macOS. The scripts build and launch the Rust app; they do not install a Python environment. Initial compilation downloads Rust crates and takes longer than subsequent starts.
+The first build downloads Rust crates and takes longer than subsequent starts.
 
-To build an executable:
+To build the app into this folder:
 
 ```bash
-cargo build --release --locked
+cargo app
 ```
 
-The result is `target/release/rakshamemo.exe` on Windows (with its icon and version details embedded) or `target/release/rakshamemo` on Linux/macOS. If `CARGO_TARGET_DIR` is set, the build is under that directory instead of `target/`. The executable uses the platform's normal system libraries; Rust and Cargo are needed for building, not for launching an already-built executable.
+This builds the release version and installs it as `bin/rakshamemo.exe` on Windows (with its icon and version details embedded) or `bin/rakshamemo` on Linux/macOS. Run it from there; rebuilding replaces it in place, so close the app before running `cargo app` again. The `bin` folder is ignored by git. `cargo app` is an alias defined in `.cargo/config.toml` for `cargo install --path . --root . --locked --force`.
+
+`cargo build --release --locked` also works and leaves the executable in `target/release/` (or under `CARGO_TARGET_DIR`, if set). The executable uses the platform's normal system libraries; Rust and Cargo are needed for building, not for launching an already-built executable.
 
 On first launch, create a master password of at least 12 characters. Existing Python vault passwords still work even if they are shorter. Keep your password safe: there is no password recovery.
 
@@ -82,7 +84,7 @@ Open **Settings** and enable **Launch at sign-in**. The option is off by default
 
 If launch at sign-in was enabled under the old name, Secure Notepad, RakshaMemo replaces that registration with its own the first time it starts with the default vault.
 
-Build the release executable and put it in a permanent location before enabling startup. Registration records that executable's absolute path, so moving or deleting it breaks automatic launch. After moving it, launch the app from its new location and turn startup off and back on. Disable the option before uninstalling. Your OS's startup/login-item controls may also disable an entry.
+Build the app with `cargo app` and start it from `bin/` (or copy it to another permanent location) before enabling startup. Registration records that executable's absolute path, so moving or deleting it breaks automatic launch. After moving it, launch the app from its new location and turn startup off and back on. Disable the option before uninstalling. Your OS's startup/login-item controls may also disable an entry.
 
 ## Migrating from Python
 

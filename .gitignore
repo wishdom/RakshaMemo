@@ -1,6 +1,10 @@
 # Rust build output (Cargo.lock is committed for reproducible app builds).
 /target/
 *.pdb
+# `cargo app` output: the installed app and Cargo's install records.
+/bin/
+/.crates.toml
+/.crates2.json
 
 # Local editors and OS metadata.
 .idea/
