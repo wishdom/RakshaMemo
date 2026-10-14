@@ -45,7 +45,7 @@ BEGIN
       VALUE "ProductName", "RakshaMemo"
       VALUE "FileVersion", "{version}"
       VALUE "ProductVersion", "{version}"
-      VALUE "OriginalFilename", "rakshamemo.exe"
+      VALUE "OriginalFilename", "RakshaMemo.exe"
     END
   END
   BLOCK "VarFileInfo"

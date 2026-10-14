@@ -2,7 +2,9 @@ use eframe::egui::{self, RichText};
 use rakshamemo::platform;
 use zeroize::Zeroizing;
 
-use super::{Dialog, Notepad, style};
+use super::{Dialog, Notepad, ornament, style};
+use crate::i18n::{fill, t};
+use rakshamemo::settings::Language;
 
 #[cfg(test)]
 mod tests;
@@ -10,27 +12,36 @@ mod tests;
 impl Notepad {
     pub(super) fn settings_ui(&mut self, ui: &mut egui::Ui) {
         style::page(ui);
+        let text = t();
         egui::ScrollArea::vertical()
             .id_salt("settings-page")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.set_max_width(ui.available_width().min(920.0));
-                ui.heading("Settings");
-                ui.weak("Changes to your preferences are saved automatically.");
+                ornament::title(ui, text.settings_title, 24.0);
+                ui.weak(text.settings_intro);
                 ui.add_space(12.0);
 
-                section(ui, "Appearance", |ui| {
+                section(ui, text.appearance, |ui| {
+                    let mut language = crate::i18n::language();
+                    setting_row(ui, text.language, text.language_description, |ui| {
+                        for option in Language::ALL {
+                            ui.selectable_value(&mut language, option, option.native_name());
+                        }
+                    });
+                    self.set_language(language);
+                    row_separator(ui);
                     let mut dark = self.settings.dark_mode;
-                    setting_row(ui, "Theme", "Choose the appearance of the app.", |ui| {
-                        ui.selectable_value(&mut dark, false, "Light");
-                        ui.selectable_value(&mut dark, true, "Dark");
+                    setting_row(ui, text.theme, text.theme_description, |ui| {
+                        ui.selectable_value(&mut dark, false, text.light);
+                        ui.selectable_value(&mut dark, true, text.dark);
                     });
                     self.set_dark_mode(ui.ctx(), dark);
                     row_separator(ui);
                     let mut clock_24h = self.settings.clock_24h;
-                    setting_row(ui, "Clock", "How the time appears at the top of the window.", |ui| {
-                        ui.selectable_value(&mut clock_24h, true, "24-hour");
-                        ui.selectable_value(&mut clock_24h, false, "12-hour");
+                    setting_row(ui, text.clock_setting, text.clock_description, |ui| {
+                        ui.selectable_value(&mut clock_24h, true, text.hours_24);
+                        ui.selectable_value(&mut clock_24h, false, text.hours_12);
                     });
                     if clock_24h != self.settings.clock_24h {
                         self.settings.clock_24h = clock_24h;
@@ -38,29 +49,30 @@ impl Notepad {
                     }
                 });
 
-                section(ui, "Startup and security", |ui| {
+                section(ui, text.startup_and_security, |ui| {
                     let mut startup = self.startup_enabled;
                     let description = if self.custom_path {
-                        "Available when using the default vault location."
+                        text.launch_custom_vault
                     } else {
-                        "Open RakshaMemo when you sign in. Your vault starts locked."
+                        text.launch_description
                     };
-                    setting_row(ui, "Launch at sign-in", description, |ui| {
+                    setting_row(ui, text.launch_at_sign_in, description, |ui| {
                         if ui
                             .add_enabled(
                                 !self.custom_path,
-                                egui::Checkbox::new(&mut startup, "Enabled"),
+                                egui::Checkbox::new(&mut startup, text.enabled),
                             )
                             .changed()
                         {
                             match platform::startup::set_enabled(startup) {
                                 Ok(()) => {
                                     self.startup_enabled = startup;
-                                    self.status = "Startup preference updated".into();
+                                    self.status = text.startup_updated.into();
                                 }
                                 Err(error) => {
-                                    self.error = Some(format!(
-                                        "Could not update startup preference: {error:#}"
+                                    self.error = Some(fill(
+                                        text.could_not_update_startup,
+                                        &[&format!("{error:#}")],
                                     ));
                                 }
                             }
@@ -68,22 +80,22 @@ impl Notepad {
                     });
                     if !self.custom_path {
                         ui.add_space(4.0);
-                        ui.weak("If you move the app, turn this option off and on to update its location.");
+                        ui.weak(text.moved_app_hint);
                     }
                     row_separator(ui);
                     setting_row(
                         ui,
-                        "Automatic lock",
-                        "Lock after this many minutes without activity. Set to 0 to never lock automatically.",
+                        text.automatic_lock,
+                        text.automatic_lock_description,
                         |ui| {
                             if ui
                                 .add(
                                     egui::DragValue::new(&mut self.settings.auto_lock_minutes)
                                         .range(0..=1440)
-                                        .suffix(" min")
+                                        .suffix(text.minutes_suffix)
                                         .speed(1.0),
                                 )
-                                .on_hover_text("Drag to adjust, or click the number to type a value.")
+                                .on_hover_text(text.drag_hover)
                                 .changed()
                             {
                                 self.persist_settings();
@@ -92,13 +104,13 @@ impl Notepad {
                     );
                     row_separator(ui);
                     let away = if cfg!(target_os = "windows") {
-                        "Lock when the window is minimized, the computer sleeps, or you lock Windows."
+                        text.lock_when_away_windows
                     } else {
-                        "Lock when the window is minimized or the computer sleeps."
+                        text.lock_when_away_other
                     };
-                    setting_row(ui, "Lock when away", away, |ui| {
+                    setting_row(ui, text.lock_when_away, away, |ui| {
                         if ui
-                            .checkbox(&mut self.settings.lock_when_away, "Lock automatically")
+                            .checkbox(&mut self.settings.lock_when_away, text.lock_automatically)
                             .changed()
                         {
                             self.persist_settings();
@@ -107,105 +119,89 @@ impl Notepad {
                     row_separator(ui);
                     setting_row(
                         ui,
-                        "Master password",
-                        "Re-encrypt your vault with a new password. You need the current one.",
+                        text.master_password,
+                        text.master_password_description,
                         |ui| {
-                            if ui.button("Change password…").clicked() {
+                            if ui.button(text.change_password_ellipsis).clicked() {
                                 self.dialog = Some(Dialog::ChangePassword(Box::default()));
                             }
                         },
                     );
                     row_separator(ui);
-                    ui.label(RichText::new("Clipboard protection").strong());
-                    ui.weak("Copied values are cleared after 30 seconds if the clipboard has not changed.");
+                    ui.label(RichText::new(text.clipboard_protection).strong());
+                    ui.weak(text.clipboard_description);
                 });
 
-                section(ui, "Vault and backups", |ui| {
-                    setting_row(
-                        ui,
-                        "Export a backup",
-                        "Save an encrypted copy of your current notes and passwords.",
-                        |ui| {
-                            if ui.button("Export vault…").clicked() {
-                                self.export_snapshot();
-                            }
-                        },
-                    );
+                section(ui, text.vault_and_backups, |ui| {
+                    setting_row(ui, text.export_backup, text.export_description, |ui| {
+                        if ui.button(text.export_vault).clicked() {
+                            self.export_snapshot();
+                        }
+                    });
                     row_separator(ui);
-                    setting_row(
-                        ui,
-                        "Replace this vault",
-                        "Import an encrypted vault after unlocking it with its password. Your current vault is backed up before replacement.",
-                        |ui| {
-                            if style::danger_button(ui, "Import vault…").clicked()
-                                && self.save_now()
-                                && let Some(path) = {
-                                    let path = rfd::FileDialog::new()
-                                        .add_filter("Encrypted vault", &["json", "bak"])
-                                        .pick_file();
-                                    self.after_blocking_dialog();
-                                    path
-                                }
-                            {
-                                self.dialog = Some(Dialog::Import {
-                                    path,
-                                    password: Zeroizing::new(String::new()),
-                                });
+                    setting_row(ui, text.replace_vault, text.replace_description, |ui| {
+                        if style::danger_button(ui, text.import_vault).clicked()
+                            && self.save_now()
+                            && let Some(path) = {
+                                let path = rfd::FileDialog::new()
+                                    .add_filter(text.encrypted_vault_filter, &["json", "bak"])
+                                    .pick_file();
+                                self.after_blocking_dialog();
+                                path
                             }
-                        },
-                    );
+                        {
+                            self.dialog = Some(Dialog::Import {
+                                path,
+                                password: Zeroizing::new(String::new()),
+                            });
+                        }
+                    });
                     row_separator(ui);
-                    setting_row(
-                        ui,
-                        "Restore a previous version",
-                        "Go back to an earlier encrypted state of this vault.",
-                        |ui| {
-                            if ui.button("Choose a version…").clicked()
-                                && let Some(store) = &self.store
-                            {
-                                self.dialog = Some(Dialog::Versions {
-                                    versions: store.versions(),
-                                    selected: None,
-                                });
-                            }
-                        },
-                    );
+                    setting_row(ui, text.restore_previous, text.restore_description, |ui| {
+                        if ui.button(text.choose_version).clicked()
+                            && let Some(store) = &self.store
+                        {
+                            self.dialog = Some(Dialog::Versions {
+                                versions: store.versions(),
+                                selected: None,
+                            });
+                        }
+                    });
                     row_separator(ui);
-                    ui.label(RichText::new("Vault location").strong());
+                    ui.label(RichText::new(text.vault_location).strong());
                     path_label(ui, &self.vault_path);
-                    egui::CollapsingHeader::new("Backup location and details")
+                    egui::CollapsingHeader::new(text.backup_details)
                         .id_salt("vault-storage-details")
                         .show(ui, |ui| {
                             if let Some(store) = &self.store {
-                                ui.label(RichText::new("Previous encrypted version").strong());
+                                ui.label(RichText::new(text.previous_version).strong());
                                 path_label(ui, &store.backup_path());
                                 ui.add_space(4.0);
-                                ui.label(format!("Created: {}", store.data.meta.created_at));
-                                ui.label(format!("Last saved: {}", store.data.meta.modified_at));
+                                ui.label(fill(text.created, &[&store.data.meta.created_at]));
+                                ui.label(fill(text.last_saved, &[&store.data.meta.modified_at]));
                             }
-                            ui.weak("Encryption: Argon2id + AES-256-GCM");
+                            ui.weak(text.encryption);
                         });
                 });
 
-                ui.weak(concat!("RakshaMemo ", env!("CARGO_PKG_VERSION"), " · Ctrl/Cmd+N new · Ctrl/Cmd+F search · Ctrl/Cmd+L lock"));
+                ui.weak(fill(text.shortcuts_footer, &[&env!("CARGO_PKG_VERSION")]));
                 ui.add_space(12.0);
             });
     }
 }
 
 fn section(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(ui.visuals().window_fill)
-        .stroke(ui.visuals().window_stroke)
-        .corner_radius(8)
-        .inner_margin(16)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).size(17.0).strong());
-            ui.add_space(8.0);
-            contents(ui);
-        });
-    ui.add_space(8.0);
+    ornament::card(ui, 18, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            RichText::new(title)
+                .font(ornament::display_font(ui.ctx(), 18.0))
+                .color(ui.visuals().hyperlink_color),
+        );
+        ui.add_space(8.0);
+        contents(ui);
+    });
+    ui.add_space(10.0);
 }
 
 /// Keep labels and controls in stable columns on desktop, then stack them when

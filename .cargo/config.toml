@@ -1,5 +1,10 @@
 [alias]
-# `cargo app` builds the release app and installs it as bin/rakshamemo(.exe)
+# `cargo app` builds the release app and installs it as bin/RakshaMemo(.exe)
 # in this folder. Rebuilding replaces it in place, so a launch-at-sign-in
 # registration that points there keeps working.
 app = "install --path . --root . --locked --force"
+
+# Build the C runtime into the Windows executable, so it runs on any Windows
+# 10 or 11 PC without the Visual C++ Redistributable (VCRUNTIME140.dll).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

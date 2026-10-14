@@ -7,13 +7,26 @@ use aes_gcm::{
 use anyhow::{Context, Result, anyhow, bail};
 use argon2::{Algorithm, Argon2, Block, Params, Version};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rand::{RngCore, rngs::OsRng};
+use rand::{TryRng, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::model::VaultData;
 
 pub const MAX_VAULT_BYTES: usize = 32 * 1024 * 1024;
+
+/// The password does not open the vault (or the vault was altered). A distinct
+/// type, so the interface can recognize and translate this common case.
+#[derive(Debug)]
+pub struct IncorrectPassword;
+
+impl std::fmt::Display for IncorrectPassword {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Incorrect password or damaged vault")
+    }
+}
+
+impl std::error::Error for IncorrectPassword {}
 const MAX_PASSWORD_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -87,7 +100,7 @@ impl VaultCipher {
             bail!("A master password is required");
         }
         let mut salt = vec![0u8; 16];
-        OsRng
+        SysRng
             .try_fill_bytes(&mut salt)
             .context("Operating system random generator failed")?;
         let params = KdfParams::default();
@@ -135,10 +148,13 @@ impl VaultCipher {
         let key = derive_key(password, &salt, &envelope.kdf)?;
         let cipher = Aes256Gcm::new_from_slice(key.as_ref())
             .map_err(|_| anyhow!("Invalid encryption key"))?;
+        // The length was checked above, so the conversion cannot fail.
+        let nonce =
+            Nonce::try_from(nonce.as_slice()).map_err(|_| anyhow!("Invalid vault nonce length"))?;
         let plaintext = Zeroizing::new(
             cipher
-                .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
-                .map_err(|_| anyhow!("Incorrect password or damaged vault"))?,
+                .decrypt(&nonce, ciphertext.as_ref())
+                .map_err(|_| IncorrectPassword)?,
         );
         let mut data: VaultData =
             serde_json::from_slice(&plaintext).context("Unsupported vault contents")?;
@@ -172,13 +188,13 @@ impl VaultCipher {
             bail!("Vault exceeds the 32 MiB file size limit");
         }
         let mut nonce = [0u8; 12];
-        OsRng
+        SysRng
             .try_fill_bytes(&mut nonce)
             .context("Operating system random generator failed")?;
         let cipher = Aes256Gcm::new_from_slice(self.key.as_ref())
             .map_err(|_| anyhow!("Invalid encryption key"))?;
         let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce), plaintext.as_slice())
+            .encrypt(&Nonce::from(nonce), plaintext.as_slice())
             .map_err(|_| anyhow!("Vault encryption failed"))?;
         let envelope = Envelope {
             v: 1,

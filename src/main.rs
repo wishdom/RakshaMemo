@@ -2,10 +2,14 @@
 
 mod app;
 mod fonts;
+mod i18n;
 mod icon;
 
 use anyhow::{Context, Result, bail};
-use rakshamemo::{platform, settings::Settings};
+use rakshamemo::{
+    platform,
+    settings::{Language, Settings},
+};
 use std::path::PathBuf;
 
 fn main() {
@@ -30,10 +34,10 @@ fn run() -> Result<()> {
             PathBuf::from(args.next().context("--vault requires a file path")?),
             true,
         ),
-        Some(_) => bail!("Usage: rakshamemo [--vault PATH]"),
+        Some(_) => bail!("Usage: RakshaMemo [--vault PATH]"),
     };
     if args.next().is_some() {
-        bail!("Usage: rakshamemo [--vault PATH]");
+        bail!("Usage: RakshaMemo [--vault PATH]");
     }
     let vault_path = std::path::absolute(vault_path)?;
     let instance = platform::SingleInstance::acquire(&vault_path)?;
@@ -44,13 +48,15 @@ fn run() -> Result<()> {
     } else {
         platform::default_settings_path()?
     };
-    let (settings, warning) = match Settings::load(&settings_path) {
+    let (mut settings, problem) = match Settings::load(&settings_path) {
         Ok(settings) => (settings, None),
-        Err(error) => (
-            Settings::default(),
-            Some(format!("Could not load settings: {error:#}")),
-        ),
+        Err(error) => (Settings::default(), Some(error)),
     };
+    // The first launch follows the system language; the choice is then kept
+    // in the settings, where the user can change it.
+    i18n::set(*settings.language.get_or_insert_with(Language::system));
+    let warning = problem
+        .map(|error| i18n::fill(i18n::t().could_not_load_settings, &[&format!("{error:#}")]));
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size(settings.window_size)

@@ -38,35 +38,38 @@ pub(super) fn apply(ctx: &egui::Context, dark: bool) {
     style.animation_time = 0.08;
     style.scroll_animation = egui::style::ScrollAnimation::duration(0.08);
 
+    // Temple colors: dark mode is a lamp-lit shrine at night (indigo stone,
+    // ivory text, temple gold); light mode is sandalwood and palm-leaf paper
+    // with brass accents. The accent doubles as the ornament color.
     let color = Color32::from_rgb;
     let (panel, surface, field, border, widget, hovered, active, text, muted, accent, selection) =
         if dark {
             (
-                color(20, 25, 33),
-                color(27, 34, 44),
-                color(16, 21, 29),
-                color(48, 61, 78),
-                color(36, 46, 60),
-                color(43, 62, 88),
-                color(30, 64, 102),
-                color(226, 233, 242),
-                color(170, 186, 205),
-                color(122, 185, 255),
-                color(33, 71, 113),
+                color(21, 18, 30),
+                color(30, 26, 41),
+                color(15, 13, 22),
+                color(58, 49, 74),
+                color(40, 34, 54),
+                color(54, 44, 68),
+                color(70, 54, 66),
+                color(242, 233, 216),
+                color(190, 174, 152),
+                color(230, 186, 96),
+                color(76, 58, 34),
             )
         } else {
             (
-                color(246, 248, 252),
-                Color32::WHITE,
-                Color32::WHITE,
-                color(204, 213, 225),
-                color(237, 241, 247),
-                color(225, 235, 250),
-                color(210, 228, 254),
-                color(31, 44, 63),
-                color(76, 93, 115),
-                color(35, 95, 173),
-                color(215, 232, 254),
+                color(246, 238, 225),
+                color(255, 250, 242),
+                color(255, 253, 248),
+                color(226, 211, 188),
+                color(240, 228, 208),
+                color(236, 219, 190),
+                color(228, 203, 160),
+                color(42, 28, 18),
+                color(104, 84, 66),
+                color(148, 87, 15),
+                color(245, 218, 166),
             )
         };
     let visuals = &mut style.visuals;
@@ -79,7 +82,7 @@ pub(super) fn apply(ctx: &egui::Context, dark: bool) {
     visuals.weak_text_color = Some(muted);
     visuals.hyperlink_color = accent;
     visuals.selection.bg_fill = selection;
-    visuals.selection.stroke = Stroke::new(1.0, if dark { accent } else { color(24, 66, 126) });
+    visuals.selection.stroke = Stroke::new(1.0, if dark { accent } else { color(110, 62, 8) });
     visuals.text_cursor.stroke = Stroke::new(1.5, accent);
     visuals.window_stroke = Stroke::new(1.0, border);
     visuals.window_corner_radius = CornerRadius::same(8);
@@ -93,21 +96,21 @@ pub(super) fn apply(ctx: &egui::Context, dark: bool) {
     visuals.popup_shadow = visuals.window_shadow;
     visuals.slider_trailing_fill = true;
     visuals.warn_fg_color = if dark {
-        color(245, 186, 97)
+        color(245, 178, 92)
     } else {
-        color(143, 83, 7)
+        color(150, 78, 6)
     };
     visuals.error_fg_color = if dark {
-        color(255, 157, 157)
+        color(255, 156, 140)
     } else {
-        color(177, 40, 47)
+        color(172, 44, 36)
     };
 
     // Control boundaries stay visible without brightening decorative dividers.
     let control_border = if dark {
-        color(84, 101, 124)
+        color(98, 84, 112)
     } else {
-        color(160, 172, 189)
+        color(186, 164, 134)
     };
     for (visual, fill, stroke) in [
         (&mut visuals.widgets.noninteractive, surface, border),
@@ -149,9 +152,9 @@ pub(super) fn page(ui: &mut egui::Ui) {
     ] {
         style.text_styles.insert(kind, FontId::proportional(15.0));
     }
-    style
-        .text_styles
-        .insert(TextStyle::Heading, FontId::proportional(22.0));
+    let heading = super::ornament::display_font(ui.ctx(), 23.0);
+    let style = ui.style_mut();
+    style.text_styles.insert(TextStyle::Heading, heading);
     style.spacing.interact_size.y = 32.0;
     style.spacing.button_padding = egui::vec2(10.0, 6.0);
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
@@ -166,27 +169,28 @@ fn action<R>(ui: &mut egui::Ui, kind: ActionStyle, contents: impl FnOnce(&mut eg
         let danger = ui.visuals().error_fg_color;
         let accent = ui.visuals().hyperlink_color;
         let (text, fills, outlines) = match kind {
+            // Saffron, the color of temple flags and lamp flames.
             ActionStyle::Primary => {
-                let fills = if dark {
-                    [rgb(43, 108, 196), rgb(56, 124, 214), rgb(36, 92, 168)]
+                if dark {
+                    let fills = [rgb(226, 140, 48), rgb(240, 158, 66), rgb(204, 120, 34)];
+                    (rgb(30, 18, 6), fills, [fills[0], fills[1], accent])
                 } else {
-                    [rgb(35, 95, 173), rgb(29, 84, 156), rgb(24, 66, 126)]
-                };
-                let ring = if dark { accent } else { rgb(16, 46, 92) };
-                (Color32::WHITE, fills, [fills[0], fills[1], ring])
+                    let fills = [rgb(178, 84, 24), rgb(160, 74, 20), rgb(138, 62, 16)];
+                    (Color32::WHITE, fills, [fills[0], fills[1], rgb(92, 40, 8)])
+                }
             }
             ActionStyle::Danger => {
                 let fills = if dark {
-                    [rgb(68, 33, 42), rgb(87, 39, 48), rgb(100, 43, 53)]
+                    [rgb(70, 30, 36), rgb(90, 36, 42), rgb(104, 40, 46)]
                 } else {
-                    [rgb(255, 236, 238), rgb(255, 220, 224), rgb(252, 203, 208)]
+                    [rgb(253, 234, 228), rgb(250, 218, 210), rgb(246, 200, 190)]
                 };
                 let soft = danger.gamma_multiply(0.55);
                 (danger, fills, [soft, danger, danger])
             }
             ActionStyle::Destructive => {
-                let fills = [rgb(177, 40, 47), rgb(155, 31, 38), rgb(134, 25, 32)];
-                let ring = if dark { danger } else { rgb(96, 16, 22) };
+                let fills = [rgb(172, 44, 36), rgb(150, 34, 28), rgb(128, 26, 22)];
+                let ring = if dark { danger } else { rgb(92, 16, 12) };
                 (Color32::WHITE, fills, [fills[0], fills[1], ring])
             }
         };
@@ -270,6 +274,13 @@ pub(super) fn nav_tab(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::R
         if let Some(fill) = fill {
             ui.painter().rect_filled(rect, 8.0, fill);
         }
+        if selected {
+            // A gold rule under the open page, like a lintel.
+            let y = rect.bottom() - 2.5;
+            let x = rect.x_range().shrink(10.0);
+            ui.painter()
+                .hline(x, y, Stroke::new(2.0, visuals.hyperlink_color));
+        }
         if response.has_focus() {
             ui.painter().rect_stroke(
                 rect,
@@ -295,9 +306,9 @@ pub(super) fn theme_toggle(ui: &mut egui::Ui, dark: bool) -> egui::Response {
     let side = ui.spacing().interact_size.y;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
     let label = if dark {
-        "Switch to light mode"
+        crate::i18n::t().switch_to_light
     } else {
-        "Switch to dark mode"
+        crate::i18n::t().switch_to_dark
     };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
@@ -339,6 +350,8 @@ pub(super) fn success_color(ui: &egui::Ui) -> Color32 {
 
 /// A four-segment bar, rating, crack-time estimate, and zxcvbn's advice.
 pub(super) fn strength_meter(ui: &mut egui::Ui, strength: &rakshamemo::strength::Strength) {
+    use crate::i18n;
+    let text = i18n::t();
     let color = match strength.score {
         0 | 1 => ui.visuals().error_fg_color,
         2 => ui.visuals().warn_fg_color,
@@ -360,13 +373,16 @@ pub(super) fn strength_meter(ui: &mut egui::Ui, strength: &rakshamemo::strength:
         ui.painter().rect_filled(bar, 3.0, fill);
     }
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new(strength.label).color(color).strong());
-        ui.weak(format!("· {} to crack offline", strength.crack_time));
+        let label = text.strength[usize::from(strength.score.min(4))];
+        ui.label(egui::RichText::new(label).color(color).strong());
+        ui.weak(i18n::fill(
+            text.crack_time,
+            &[&i18n::duration(strength.crack_seconds)],
+        ));
     });
-    for advice in [&strength.warning, &strength.suggestion]
-        .into_iter()
-        .flatten()
-    {
+    let warning = strength.warning.map(i18n::warning);
+    let suggestion = strength.suggestion.map(i18n::suggestion);
+    for advice in [warning, suggestion].into_iter().flatten() {
         ui.add(egui::Label::new(egui::RichText::new(advice).weak()).wrap());
     }
 }

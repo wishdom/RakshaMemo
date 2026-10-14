@@ -3,6 +3,7 @@ use rakshamemo::generator;
 use zeroize::Zeroize;
 
 use super::{EntryEditor, Notepad, style};
+use crate::i18n::{self, fill, t};
 
 impl Notepad {
     /// Editing uses the page itself so the fields have the same room as the table.
@@ -15,15 +16,15 @@ impl Notepad {
         style::page(ui);
         let mut back = false;
         ui.horizontal(|ui| {
-            back = ui.button("Back to passwords").clicked();
+            back = ui.button(t().back_to_passwords).clicked();
             ui.add_space(8.0);
-            ui.heading("Password details");
+            ui.heading(t().password_details);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.save_status(ui);
             });
         });
         ui.add_space(4.0);
-        ui.label("Changes save automatically as you type.");
+        ui.label(t().saves_as_you_type);
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(12.0);
@@ -60,13 +61,9 @@ impl Notepad {
                 }
                 ui.add_space(12.0);
                 let updated = chrono::DateTime::parse_from_rfc3339(&editor.item.updated_at)
-                    .map(|date| {
-                        date.with_timezone(&chrono::Local)
-                            .format("%Y-%m-%d at %H:%M")
-                            .to_string()
-                    })
+                    .map(|date| i18n::date_time(&date.with_timezone(&chrono::Local)))
                     .unwrap_or_else(|_| editor.item.updated_at.clone());
-                ui.label(format!("Last updated {updated}"));
+                ui.label(fill(t().last_updated, &[&updated]));
             });
 
         if edited {
@@ -86,7 +83,9 @@ impl Notepad {
                 editor.refresh_strength();
                 *edited = true;
             }
-            Err(error) => self.error = Some(error.to_string()),
+            // The sliders keep the length valid, so only an empty set of
+            // characters can fail.
+            Err(_) => self.error = Some(t().choose_character_set.into()),
         }
     }
 
@@ -97,17 +96,18 @@ impl Notepad {
         edited: &mut bool,
         register_category: &mut bool,
     ) {
+        let text = t();
         egui::Frame::group(ui.style())
             .inner_margin(18)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing = egui::vec2(10.0, 8.0);
 
-                field_label(ui, "Title");
+                field_label(ui, text.field_title);
                 let title = ui.add(
                     single_line(&mut editor.item.title)
                         .id_salt((&editor.item.id, "title"))
-                        .hint_text("Untitled — account or service name"),
+                        .hint_text(text.title_hint),
                 );
                 if std::mem::take(&mut editor.focus_title) {
                     title.request_focus();
@@ -115,17 +115,17 @@ impl Notepad {
                 *edited |= title.changed();
 
                 ui.add_space(8.0);
-                field_label(ui, "Username / email");
+                field_label(ui, text.field_username);
                 *edited |= ui
                     .add(
                         single_line(&mut editor.item.username)
                             .id_salt((&editor.item.id, "username"))
-                            .hint_text("Username or email address"),
+                            .hint_text(text.username_hint),
                     )
                     .changed();
 
                 ui.add_space(8.0);
-                field_label(ui, "Password");
+                field_label(ui, text.field_password);
                 if ui
                     .add(
                         single_line(&mut editor.item.password)
@@ -138,17 +138,17 @@ impl Notepad {
                     editor.refresh_strength();
                 }
                 ui.horizontal_wrapped(|ui| {
-                    if style::primary_button(ui, "Generate")
-                        .on_hover_text("Replace with a random password using the options below")
+                    if style::primary_button(ui, text.generate)
+                        .on_hover_text(text.generate_hover)
                         .clicked()
                     {
                         self.generate_password(editor, edited);
                     }
-                    ui.checkbox(&mut editor.show_password, "Show password");
+                    ui.checkbox(&mut editor.show_password, text.show_password);
                     if ui
                         .add_enabled(
                             !editor.item.password.is_empty(),
-                            egui::Button::new("Copy password"),
+                            egui::Button::new(text.copy_password),
                         )
                         .clicked()
                     {
@@ -157,7 +157,7 @@ impl Notepad {
                     if ui
                         .add_enabled(
                             !editor.item.username.is_empty(),
-                            egui::Button::new("Copy username"),
+                            egui::Button::new(text.copy_username),
                         )
                         .clicked()
                     {
@@ -170,25 +170,26 @@ impl Notepad {
                     style::strength_meter(ui, strength);
                 }
 
-                egui::CollapsingHeader::new("Password generator options")
+                egui::CollapsingHeader::new(text.generator_options)
                     .id_salt((&editor.item.id, "generator"))
                     .show(ui, |ui| {
                         ui.add(
-                            egui::Slider::new(&mut editor.generator.length, 8..=128).text("Length"),
+                            egui::Slider::new(&mut editor.generator.length, 8..=128)
+                                .text(text.length),
                         );
                         ui.horizontal_wrapped(|ui| {
                             ui.checkbox(&mut editor.generator.lowercase, "a–z");
                             ui.checkbox(&mut editor.generator.uppercase, "A–Z");
                             ui.checkbox(&mut editor.generator.digits, "0–9");
-                            ui.checkbox(&mut editor.generator.symbols, "Symbols");
+                            ui.checkbox(&mut editor.generator.symbols, text.symbols);
                         });
-                        if style::primary_button(ui, "Generate password").clicked() {
+                        if style::primary_button(ui, text.generate_password).clicked() {
                             self.generate_password(editor, edited);
                         }
                     });
 
                 ui.add_space(12.0);
-                field_label(ui, "Category (optional)");
+                field_label(ui, text.field_category);
                 ui.horizontal(|ui| {
                     let choice_width = 95.0;
                     let field_width =
@@ -197,20 +198,20 @@ impl Notepad {
                     let field = ui.add(
                         single_line(&mut editor.item.kind)
                             .id_salt((&editor.item.id, "category"))
-                            .hint_text("Type a category")
+                            .hint_text(text.category_hint)
                             .desired_width(field_width),
                     );
                     *edited |= field.changed();
                     *register_category |= field.lost_focus();
                     egui::ComboBox::from_id_salt((&editor.item.id, "entry_category"))
-                        .selected_text("Choose")
+                        .selected_text(text.choose)
                         .width(choice_width)
                         .show_ui(ui, |ui| {
                             *edited |= ui
                                 .selectable_value(
                                     &mut editor.item.kind,
                                     String::new(),
-                                    "No category",
+                                    text.no_category,
                                 )
                                 .changed();
                             if let Some(store) = &self.store {
@@ -222,7 +223,7 @@ impl Notepad {
                             }
                         });
                 });
-                ui.label("Categories help group and filter accounts.");
+                ui.label(text.categories_help);
             });
     }
 }
@@ -244,8 +245,8 @@ fn password_extra_field(ui: &mut egui::Ui, editor: &mut EntryEditor, height: f32
         .inner_margin(18)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            field_label(ui, "Extra information");
-            ui.label("Website, recovery notes, or anything useful for this account.");
+            field_label(ui, t().field_extra);
+            ui.label(t().extra_help);
             ui.add_space(8.0);
             ui.add(
                 egui::TextEdit::multiline(&mut editor.item.extra)
@@ -255,7 +256,7 @@ fn password_extra_field(ui: &mut egui::Ui, editor: &mut EntryEditor, height: f32
                     .desired_width(f32::INFINITY)
                     .min_size(egui::vec2(0.0, height))
                     .margin(egui::Margin::same(10))
-                    .hint_text("Add extra information…"),
+                    .hint_text(t().extra_hint),
             )
             .changed()
         })

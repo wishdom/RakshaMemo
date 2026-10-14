@@ -1,5 +1,10 @@
 use anyhow::{Result, ensure};
-use rand::{CryptoRng, Rng, rngs::OsRng, seq::SliceRandom};
+use rand::{
+    CryptoRng,
+    rand_core::UnwrapErr,
+    rngs::SysRng,
+    seq::{IndexedRandom, SliceRandom},
+};
 
 const LOWERCASE: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
 const UPPERCASE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -28,10 +33,11 @@ impl Default for Options {
 }
 
 pub fn generate(options: &Options) -> Result<String> {
-    generate_with_rng(options, &mut OsRng)
+    // Like the previous OsRng, this panics only if the OS cannot supply randomness.
+    generate_with_rng(options, &mut UnwrapErr(SysRng))
 }
 
-fn generate_with_rng(options: &Options, rng: &mut (impl Rng + CryptoRng)) -> Result<String> {
+fn generate_with_rng(options: &Options, rng: &mut impl CryptoRng) -> Result<String> {
     ensure!(
         (8..=128).contains(&options.length),
         "Password length must be between 8 and 128 characters"

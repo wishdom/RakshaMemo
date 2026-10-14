@@ -55,7 +55,7 @@ pub struct NewKey(VaultCipher);
 impl PasswordChange {
     pub fn run(self) -> Result<NewKey> {
         if !self.cipher.matches(&self.current)? {
-            bail!("The current password is not correct");
+            return Err(crate::crypto::IncorrectPassword.into());
         }
         Ok(NewKey(VaultCipher::new(&self.new)?))
     }

@@ -1,38 +1,49 @@
 //! The app icon, drawn from code so every size stays sharp and there is no
-//! binary asset to keep in sync: a page with ruled lines and a shield.
-//! Used by the window at runtime and by `build.rs` for the Windows `.ico`.
-//! Standard library only, because the build script compiles this file too.
+//! binary asset to keep in sync: a lotus mandala, the flower seen from above
+//! with two rings of eight gold petals around a seed pod that holds a keyhole,
+//! against a lamp-lit indigo night. Used by the window and the app's logo at
+//! runtime, and by `build.rs` for the Windows `.ico`. Standard library only,
+//! because the build script compiles this file too.
 
 type Rgba = [f32; 4];
+type Point = (f32, f32);
 
-const BACKGROUND_TOP: Rgba = [64.0, 132.0, 240.0, 255.0];
-const BACKGROUND_BOTTOM: Rgba = [30.0, 64.0, 175.0, 255.0];
-const PAGE: Rgba = [248.0, 250.0, 252.0, 255.0];
-const RULE: Rgba = [148.0, 163.0, 184.0, 255.0];
-const SHIELD: Rgba = [245.0, 158.0, 11.0, 255.0];
-const WHITE: Rgba = [255.0, 255.0, 255.0, 255.0];
+const NIGHT_TOP: Rgba = [58.0, 34.0, 112.0, 255.0];
+const NIGHT_BOTTOM: Rgba = [20.0, 12.0, 44.0, 255.0];
+const LAMP_GLOW: Rgba = [214.0, 106.0, 38.0, 255.0];
+const GOLD_TOP: Rgba = [252.0, 214.0, 122.0, 255.0];
+const GOLD_BOTTOM: Rgba = [204.0, 136.0, 42.0, 255.0];
+const GOLD_SHADOW: Rgba = [150.0, 92.0, 26.0, 255.0];
+const SANCTUM: Rgba = [26.0, 14.0, 50.0, 255.0];
+
+const CENTER: Point = (0.5, 0.5);
+/// The dark outline that separates overlapping petals.
+const PETAL_GAP: f32 = 0.011;
+const POD_RADIUS: f32 = 0.125;
+const POD_RIM: f32 = 0.013;
 
 fn length(x: f32, y: f32) -> f32 {
     (x * x + y * y).sqrt()
 }
 
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let t = t.clamp(0.0, 1.0);
+    let mut color = a;
+    for (channel, value) in color.iter_mut().enumerate() {
+        *value += (b[channel] - a[channel]) * t;
+    }
+    color
+}
+
 /// Signed distance to a rounded rectangle (negative inside).
-fn rounded_box(p: (f32, f32), center: (f32, f32), half: (f32, f32), radius: f32) -> f32 {
+fn rounded_box(p: Point, center: Point, half: Point, radius: f32) -> f32 {
     let qx = (p.0 - center.0).abs() - half.0 + radius;
     let qy = (p.1 - center.1).abs() - half.1 + radius;
     length(qx.max(0.0), qy.max(0.0)) + qx.max(qy).min(0.0) - radius
 }
 
-/// Signed distance to a line segment with round caps of `radius`.
-fn capsule(p: (f32, f32), a: (f32, f32), b: (f32, f32), radius: f32) -> f32 {
-    let (px, py) = (p.0 - a.0, p.1 - a.1);
-    let (bx, by) = (b.0 - a.0, b.1 - a.1);
-    let t = ((px * bx + py * by) / (bx * bx + by * by)).clamp(0.0, 1.0);
-    length(px - bx * t, py - by * t) - radius
-}
-
 /// Signed distance to a closed polygon (Inigo Quilez's formulation).
-fn polygon(p: (f32, f32), points: &[(f32, f32)]) -> f32 {
+fn polygon(p: Point, points: &[Point]) -> f32 {
     let mut distance = f32::MAX;
     let mut sign = 1.0;
     let mut previous = points[points.len() - 1];
@@ -52,60 +63,119 @@ fn polygon(p: (f32, f32), points: &[(f32, f32)]) -> f32 {
     sign * distance
 }
 
-/// The icon's colour at a point in unit coordinates (y down).
-fn shade(x: f32, y: f32) -> Option<Rgba> {
-    let p = (x, y);
-    if rounded_box(p, (0.5, 0.5), (0.44, 0.44), 0.2) > 0.0 {
-        return None;
-    }
-    let t = ((y - 0.06) / 0.88).clamp(0.0, 1.0);
-    let mut color = [0.0; 4];
-    for (channel, value) in color.iter_mut().enumerate() {
-        *value =
-            BACKGROUND_TOP[channel] + (BACKGROUND_BOTTOM[channel] - BACKGROUND_TOP[channel]) * t;
-    }
-    if rounded_box(p, (0.44, 0.45), (0.22, 0.28), 0.05) < 0.0 {
-        color = PAGE;
-        for (row, end) in [(0.30, 0.56), (0.39, 0.56), (0.48, 0.47)] {
-            if capsule(p, (0.30, row), (end, row), 0.018) < 0.0 {
-                color = RULE;
-            }
-        }
-    }
-    let scale = 0.19;
-    let local = ((x - 0.67) / scale, (y - 0.67) / scale);
-    let shield = polygon(
-        local,
+/// A keyhole of height about `size`: a round head above a flared slot.
+fn keyhole(p: Point, top: Point, size: f32) -> f32 {
+    let head = length(p.0 - top.0, p.1 - top.1) - 0.36 * size;
+    let slot = polygon(
+        p,
         &[
-            (0.0, -1.0),
-            (0.88, -0.68),
-            (0.8, 0.2),
-            (0.0, 1.0),
-            (-0.8, 0.2),
-            (-0.88, -0.68),
+            (top.0 - 0.2 * size, top.1 + 0.05 * size),
+            (top.0 + 0.2 * size, top.1 + 0.05 * size),
+            (top.0 + 0.34 * size, top.1 + 0.85 * size),
+            (top.0 - 0.34 * size, top.1 + 0.85 * size),
         ],
     );
-    if shield < 0.22 {
-        color = WHITE;
-    }
-    if shield < 0.0 {
-        color = SHIELD;
-        let check = capsule(local, (-0.38, 0.0), (-0.1, 0.3), 0.13).min(capsule(
-            local,
-            (-0.1, 0.3),
-            (0.42, -0.32),
-            0.13,
-        ));
-        if check < 0.0 {
-            color = WHITE;
+    head.min(slot)
+}
+
+/// A petal outline from `base` along `angle` (radians clockwise from up):
+/// full near the base, tapering to a point.
+fn petal(base: Point, angle: f32, length: f32, width: f32) -> Vec<Point> {
+    const STEPS: usize = 16;
+    let along = (angle.sin(), -angle.cos());
+    let across = (-along.1, along.0);
+    let point = |t: f32, side: f32| {
+        // sin(π) rounds to a tiny negative number, which powf turns into NaN.
+        let swell = (std::f32::consts::PI * t).sin().max(0.0).powf(0.8);
+        let half = width * swell * (1.0 - 0.3 * t);
+        (
+            base.0 + along.0 * length * t + across.0 * half * side,
+            base.1 + along.1 * length * t + across.1 * half * side,
+        )
+    };
+    let t = |step: usize| step as f32 / STEPS as f32;
+    let mut points: Vec<Point> = (0..=STEPS).map(|step| point(t(step), 1.0)).collect();
+    points.extend((1..STEPS).rev().map(|step| point(t(step), -1.0)));
+    points
+}
+
+/// Eight petals radiating from `start` away from the centre, the first at
+/// `offset` degrees clockwise from straight up.
+fn petal_ring(offset: f32, start: f32, length: f32, width: f32) -> Vec<Vec<Point>> {
+    (0..8)
+        .map(|index| {
+            let angle = (index as f32 * 45.0 + offset).to_radians();
+            let base = (
+                CENTER.0 + angle.sin() * start,
+                CENTER.1 - angle.cos() * start,
+            );
+            petal(base, angle, length, width)
+        })
+        .collect()
+}
+
+/// The petal outlines, built once per image.
+struct Lotus {
+    /// The outer ring, set between the inner petals and shaded deeper.
+    outer: Vec<Vec<Point>>,
+    inner: Vec<Vec<Point>>,
+}
+
+impl Lotus {
+    fn new() -> Self {
+        Self {
+            outer: petal_ring(22.5, 0.1, 0.29, 0.09),
+            inner: petal_ring(0.0, 0.08, 0.24, 0.095),
         }
     }
-    Some(color)
+
+    /// The icon's colour at a point in unit coordinates (y down).
+    fn shade(&self, x: f32, y: f32) -> Option<Rgba> {
+        let p = (x, y);
+        if rounded_box(p, CENTER, (0.44, 0.44), 0.2) > 0.0 {
+            return None;
+        }
+        // Night sky, warmed by lamplight behind the flower.
+        let mut color = mix(NIGHT_TOP, NIGHT_BOTTOM, (y - 0.06) / 0.88);
+        let glow = (1.0 - length(x - CENTER.0, y - CENTER.1) / 0.42).max(0.0);
+        color = mix(color, LAMP_GLOW, glow * glow * 0.7);
+
+        let gold = mix(GOLD_TOP, GOLD_BOTTOM, (y - 0.15) / 0.7);
+        let outer = mix(gold, GOLD_SHADOW, 0.45);
+        // Back to front: each petal's outline separates it from those behind.
+        let rings = [(&self.outer, outer), (&self.inner, gold)];
+        let mut covered = false;
+        for (ring, fill) in rings {
+            for outline in ring {
+                let distance = polygon(p, outline);
+                if distance < 0.0 {
+                    color = fill;
+                    covered = true;
+                } else if distance < PETAL_GAP && covered {
+                    color = SANCTUM;
+                }
+            }
+        }
+        // The seed pod, rimmed in shadow, holds the keyhole.
+        let pod = length(x - CENTER.0, y - CENTER.1);
+        if pod < POD_RADIUS {
+            color = if pod > POD_RADIUS - POD_RIM {
+                SANCTUM
+            } else {
+                gold
+            };
+        }
+        if keyhole(p, (CENTER.0, CENTER.1 - 0.015), 0.085) < 0.0 {
+            color = SANCTUM;
+        }
+        Some(color)
+    }
 }
 
 /// Straight-alpha RGBA pixels, row by row, with 4×4 supersampling.
 pub fn rgba(size: u32) -> Vec<u8> {
     const SAMPLES: u32 = 4;
+    let lotus = Lotus::new();
     let mut pixels = Vec::with_capacity((size * size * 4) as usize);
     for row in 0..size {
         for column in 0..size {
@@ -114,7 +184,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
                 for sx in 0..SAMPLES {
                     let x = (column as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / size as f32;
                     let y = (row as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / size as f32;
-                    if let Some(color) = shade(x, y) {
+                    if let Some(color) = lotus.shade(x, y) {
                         let alpha = color[3] / 255.0;
                         for channel in 0..3 {
                             sum[channel] += color[channel] * alpha;
@@ -199,6 +269,13 @@ fn bmp_image(size: u32) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    fn pixel(pixels: &[u8], size: u32, x: f32, y: f32) -> [u8; 4] {
+        let column = (x * size as f32) as u32;
+        let row = (y * size as f32) as u32;
+        let index = ((row * size + column) * 4) as usize;
+        pixels[index..index + 4].try_into().unwrap()
+    }
+
     #[test]
     fn icon_has_transparent_corners_and_an_opaque_centre() {
         let size = 64;
@@ -207,6 +284,31 @@ mod tests {
         assert_eq!(pixels[3], 0, "Rounded corners are transparent");
         let centre = ((size / 2 * size + size / 2) * 4) as usize;
         assert_eq!(pixels[centre + 3], 255);
+    }
+
+    #[test]
+    fn petals_are_gold_and_the_keyhole_is_dark() {
+        let size = 128;
+        let pixels = rgba(size);
+        // The top inner petal, halfway out.
+        let petal = pixel(&pixels, size, 0.5, 0.25);
+        assert!(
+            petal[0] > 200 && petal[1] > 150 && petal[2] < 140,
+            "{petal:?}"
+        );
+        let keyhole = pixel(&pixels, size, 0.5, 0.5);
+        assert!(keyhole[0] < 60 && keyhole[1] < 60, "{keyhole:?}");
+        let sky = pixel(&pixels, size, 0.18, 0.18);
+        assert!(sky[2] > sky[1], "The night sky is indigo: {sky:?}");
+    }
+
+    #[test]
+    fn petal_outlines_are_closed_and_finite() {
+        let lotus = Lotus::new();
+        for outline in lotus.outer.iter().chain(&lotus.inner) {
+            assert_eq!(outline.len(), 32);
+            assert!(outline.iter().all(|(x, y)| x.is_finite() && y.is_finite()));
+        }
     }
 
     #[test]

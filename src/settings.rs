@@ -18,6 +18,58 @@ pub struct Settings {
     pub lock_when_away: bool,
     pub clock_24h: bool,
     pub note_sort: NoteSort,
+    /// `None` until the first launch picks one from the system locale.
+    pub language: Option<Language>,
+}
+
+/// The interface language. Stored as its ISO 639-1 code.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub enum Language {
+    #[default]
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "fr")]
+    French,
+    #[serde(rename = "ja")]
+    Japanese,
+}
+
+impl Language {
+    pub const ALL: [Self; 3] = [Self::English, Self::French, Self::Japanese];
+
+    /// The language for a BCP 47 locale such as `fr-CA` or `ja_JP.UTF-8`,
+    /// falling back to English for languages the app does not offer.
+    pub fn from_locale(locale: &str) -> Self {
+        let primary = locale.split(['-', '_', '.', '@']).next().unwrap_or("");
+        match primary.to_ascii_lowercase().as_str() {
+            "fr" => Self::French,
+            "ja" => Self::Japanese,
+            _ => Self::English,
+        }
+    }
+
+    /// The operating system's preferred language.
+    pub fn system() -> Self {
+        sys_locale::get_locale().map_or(Self::English, |locale| Self::from_locale(&locale))
+    }
+
+    /// The language's own name, as shown in the language menu.
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::French => "Français",
+            Self::Japanese => "日本語",
+        }
+    }
+
+    /// A short label for compact controls.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::English => "EN",
+            Self::French => "FR",
+            Self::Japanese => "JA",
+        }
+    }
 }
 
 /// Pinned notes always come first; this orders the rest.
@@ -39,6 +91,7 @@ impl Default for Settings {
             lock_when_away: true,
             clock_24h: true,
             note_sort: NoteSort::default(),
+            language: None,
         }
     }
 }
@@ -128,6 +181,34 @@ mod tests {
         assert!(!settings.dark_mode);
         assert_eq!(settings.auto_lock_minutes, 5);
         assert_eq!(settings.window_size, [1100.0, 740.0]);
+    }
+
+    #[test]
+    fn languages_come_from_locales_and_round_trip_as_codes() {
+        for (locale, language) in [
+            ("fr-FR", Language::French),
+            ("fr_CA.UTF-8", Language::French),
+            ("ja-JP", Language::Japanese),
+            ("JA", Language::Japanese),
+            ("en-US", Language::English),
+            ("de-DE", Language::English),
+            ("", Language::English),
+        ] {
+            assert_eq!(Language::from_locale(locale), language, "{locale}");
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        assert_eq!(Settings::load(&path).unwrap().language, None);
+        fs::write(&path, r#"{"language": "ja"}"#).unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        assert_eq!(settings.language, Some(Language::Japanese));
+        settings.language = Some(Language::French);
+        settings.save(&path).unwrap();
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains(r#""language": "fr""#)
+        );
     }
 
     #[test]

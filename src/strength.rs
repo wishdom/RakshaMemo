@@ -1,17 +1,20 @@
 //! Password strength estimates from zxcvbn: dictionary words, names, dates,
 //! keyboard patterns, and repeats count against a password, not just length.
 
+pub use zxcvbn::feedback::{Suggestion, Warning};
+
 /// What the UI shows. zxcvbn's own result holds password fragments, so only
 /// these summary fields are kept and the full result is dropped at once.
+/// The advice stays typed so the interface can show it in any language.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Strength {
     /// 0 (very weak) to 4 (very strong).
     pub score: u8,
-    pub label: &'static str,
-    /// Estimated offline cracking time against a slow hash such as Argon2.
-    pub crack_time: String,
-    pub warning: Option<String>,
-    pub suggestion: Option<String>,
+    /// Estimated offline cracking time, in seconds, against a slow hash such
+    /// as Argon2.
+    pub crack_seconds: f64,
+    pub warning: Option<Warning>,
+    pub suggestion: Option<Suggestion>,
 }
 
 /// zxcvbn's cost grows quickly with length, and longer passwords are not
@@ -31,25 +34,15 @@ pub fn estimate(password: &str, user_inputs: &[&str]) -> Option<Strength> {
     let entropy = zxcvbn::zxcvbn(&password[..end], user_inputs);
     let score = u8::from(entropy.score());
     let feedback = entropy.feedback();
+    let crack_seconds = match entropy.crack_times().offline_slow_hashing_1e4_per_second() {
+        zxcvbn::time_estimates::CrackTimeSeconds::Integer(seconds) => seconds as f64,
+        zxcvbn::time_estimates::CrackTimeSeconds::Float(seconds) => seconds,
+    };
     Some(Strength {
         score,
-        label: match score {
-            0 => "Very weak",
-            1 => "Weak",
-            2 => "Fair",
-            3 => "Strong",
-            _ => "Very strong",
-        },
-        crack_time: entropy
-            .crack_times()
-            .offline_slow_hashing_1e4_per_second()
-            .to_string(),
-        warning: feedback
-            .and_then(|feedback| feedback.warning())
-            .map(|warning| warning.to_string()),
-        suggestion: feedback
-            .and_then(|feedback| feedback.suggestions().first())
-            .map(|suggestion| suggestion.to_string()),
+        crack_seconds,
+        warning: feedback.and_then(|feedback| feedback.warning()),
+        suggestion: feedback.and_then(|feedback| feedback.suggestions().first().copied()),
     })
 }
 
@@ -65,7 +58,7 @@ mod tests {
         assert!(weak.warning.is_some() || weak.suggestion.is_some());
         let strong = estimate("correct-horse-battery-staple-quilt", &[]).unwrap();
         assert!(strong.score >= 3, "{strong:?}");
-        assert!(!strong.crack_time.is_empty());
+        assert!(strong.crack_seconds > weak.crack_seconds);
     }
 
     #[test]

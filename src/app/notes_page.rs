@@ -11,25 +11,29 @@ use rakshamemo::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{Dialog, Notepad, Shortcut, style};
+use super::{Dialog, Notepad, Shortcut, ornament, style};
+use crate::i18n::{self, fill, t};
 
 const LIST_ROW_HEIGHT: f32 = 46.0;
 const PREVIEW_CHARS: usize = 80;
 
-/// Indices of the notes matching a search. Rebuilt only when the query, the
-/// vault revision, or the number of notes changes, never on mere repaints.
+/// The notes list in display order: matches for the search, pinned first, then
+/// the chosen sort. Rebuilt only when the query, sort, vault revision, or
+/// number of notes changes, never on mere repaints.
 #[derive(Default)]
 pub(super) struct SearchCache {
-    key: Option<(u64, usize)>,
+    key: Option<(u64, usize, NoteSort)>,
     needle: Zeroizing<String>,
-    hits: Vec<usize>,
+    order: Vec<usize>,
+    /// Word and character counts of the open note, by note and revision.
+    counts: Option<((String, u64), (usize, usize))>,
 }
 
 impl SearchCache {
-    fn matches(&mut self, notes: &[Note], needle: &str, revision: u64) -> &[usize] {
-        let key = (revision, notes.len());
+    fn ordered(&mut self, notes: &[Note], needle: &str, revision: u64, sort: NoteSort) -> &[usize] {
+        let key = (revision, notes.len(), sort);
         if self.key != Some(key) || *self.needle != needle {
-            self.hits = notes
+            self.order = notes
                 .iter()
                 .enumerate()
                 .filter(|(_, note)| {
@@ -39,11 +43,28 @@ impl SearchCache {
                 })
                 .map(|(index, _)| index)
                 .collect();
+            sort_notes(&mut self.order, notes, sort);
             self.needle.zeroize();
             self.needle.push_str(needle);
             self.key = Some(key);
         }
-        &self.hits
+        &self.order
+    }
+
+    /// Counting a long note costs time on every repaint, so the result is
+    /// kept until the note changes.
+    fn counts(&mut self, note: &Note, revision: u64) -> (usize, usize) {
+        match &self.counts {
+            Some(((id, at), counts)) if *id == note.id && *at == revision => *counts,
+            _ => {
+                let counts = (
+                    note.content.split_whitespace().count(),
+                    note.content.chars().count(),
+                );
+                self.counts = Some(((note.id.clone(), revision), counts));
+                counts
+            }
+        }
     }
 }
 
@@ -67,9 +88,9 @@ fn sort_notes(order: &mut [usize], notes: &[Note], sort: NoteSort) {
 
 fn sort_label(sort: NoteSort) -> &'static str {
     match sort {
-        NoteSort::RecentlyEdited => "Last edited",
-        NoteSort::Title => "Title (A–Z)",
-        NoteSort::Created => "Newest first",
+        NoteSort::RecentlyEdited => t().sort_recently_edited,
+        NoteSort::Title => t().sort_title,
+        NoteSort::Created => t().sort_newest,
     }
 }
 
@@ -89,9 +110,9 @@ impl Notepad {
             .show(ui, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.heading("Notes");
+                    ornament::title(ui, t().notes_title, 22.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        new_note |= style::primary_button(ui, "+ New")
+                        new_note |= style::primary_button(ui, t().new_note_button)
                             .on_hover_text("Ctrl/Cmd+N")
                             .clicked();
                     });
@@ -101,7 +122,7 @@ impl Notepad {
                     .add(
                         egui::TextEdit::singleline(&mut self.query)
                             .id(egui::Id::new("note_search"))
-                            .hint_text("Search notes…")
+                            .hint_text(t().search_notes)
                             .margin(egui::vec2(8.0, 6.0))
                             .min_size(egui::vec2(0.0, 32.0))
                             .desired_width(f32::INFINITY),
@@ -111,7 +132,7 @@ impl Notepad {
                     search.request_focus();
                 }
                 ui.horizontal(|ui| {
-                    ui.weak("Sort");
+                    ui.weak(t().sort);
                     egui::ComboBox::from_id_salt("note_sort")
                         .selected_text(sort_label(sort))
                         .width(ui.available_width())
@@ -126,18 +147,18 @@ impl Notepad {
                 ui.add_space(2.0);
                 ui.separator();
                 let needle = Zeroizing::new(self.query.trim().to_lowercase());
-                let mut order = self
-                    .transient
-                    .note_search
-                    .matches(&store.data.notes.items, &needle, self.revision)
-                    .to_vec();
-                sort_notes(&mut order, &store.data.notes.items, sort);
+                let order = self.transient.note_search.ordered(
+                    &store.data.notes.items,
+                    &needle,
+                    self.revision,
+                    sort,
+                );
                 egui::ScrollArea::vertical()
                     .id_salt("notes_list")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        for &index in &order {
+                        for &index in order {
                             let note = &mut store.data.notes.items[index];
                             let selected = note.id == store.data.notes.active_id;
                             let row = note_row(ui, note, selected);
@@ -146,13 +167,13 @@ impl Notepad {
                                 changed = true;
                             }
                             row.context_menu(|ui| {
-                                let pin = if note.pinned { "Unpin" } else { "Pin to top" };
+                                let pin = if note.pinned { t().unpin } else { t().pin };
                                 if ui.button(pin).clicked() {
                                     note.pinned = !note.pinned;
                                     changed = true;
                                     ui.close();
                                 }
-                                if style::danger_button(ui, "Delete…").clicked() {
+                                if style::danger_button(ui, t().delete_ellipsis).clicked() {
                                     delete = Some(note.id.clone());
                                     ui.close();
                                 }
@@ -162,9 +183,9 @@ impl Notepad {
                             ui.add_space(16.0);
                             ui.vertical_centered(|ui| {
                                 ui.weak(if store.data.notes.items.is_empty() {
-                                    "No notes yet."
+                                    t().no_notes
                                 } else {
-                                    "No matching notes."
+                                    t().no_matching_notes
                                 });
                             });
                         }
@@ -185,11 +206,15 @@ impl Notepad {
                 .find(|note| note.id == store.data.notes.active_id)
             else {
                 ui.vertical_centered(|ui| {
-                    ui.add_space((ui.available_height() / 2.0 - 60.0).max(24.0));
-                    ui.strong("Nothing to show yet");
-                    ui.weak("Notes are encrypted and saved automatically as you type.");
+                    ui.add_space((ui.available_height() / 2.0 - 140.0).max(24.0));
+                    ornament::diya(ui, 120.0);
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(t().nothing_yet).font(ornament::display_font(ui.ctx(), 20.0)),
+                    );
+                    ui.weak(t().notes_explained);
                     ui.add_space(10.0);
-                    if style::primary_button(ui, "+ Create a note").clicked() {
+                    if style::primary_button(ui, t().create_note).clicked() {
                         add_note(&mut store.data.notes);
                         self.transient.focus_note_title = true;
                         changed = true;
@@ -199,12 +224,25 @@ impl Notepad {
                 return;
             };
             ui.horizontal(|ui| {
-                let controls = 90.0 + ui.spacing().interact_size.y + ui.spacing().item_spacing.x;
+                // Leave room for the pin and Delete buttons; the label's
+                // width depends on the language.
+                let delete_width = egui::WidgetText::from(t().delete_ellipsis)
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Button,
+                    )
+                    .size()
+                    .x
+                    + ui.spacing().button_padding.x * 2.0;
+                let controls =
+                    delete_width + ui.spacing().interact_size.y + ui.spacing().item_spacing.x * 3.0;
                 let title = ui.add(
                     egui::TextEdit::singleline(&mut note.title)
                         .id(egui::Id::new(("note_title", &note.id)))
-                        .font(egui::TextStyle::Heading)
-                        .hint_text("Untitled")
+                        .font(egui::FontId::proportional(22.0))
+                        .hint_text(t().untitled)
                         .desired_width((ui.available_width() - controls).max(100.0)),
                 );
                 if std::mem::take(&mut self.transient.focus_note_title) {
@@ -221,12 +259,12 @@ impl Notepad {
                     note.updated_at = model::now();
                     changed = true;
                 }
-                let pin = if note.pinned { "Unpin" } else { "Pin to top" };
+                let pin = if note.pinned { t().unpin } else { t().pin };
                 if style::star_button(ui, note.pinned, pin).clicked() {
                     note.pinned = !note.pinned;
                     changed = true;
                 }
-                if style::danger_button(ui, "Delete…").clicked() {
+                if style::danger_button(ui, t().delete_ellipsis).clicked() {
                     delete = Some(note.id.clone());
                 }
             });
@@ -248,7 +286,7 @@ impl Notepad {
                                 .font(egui::FontId::proportional(16.0))
                                 .desired_width(f32::INFINITY)
                                 .margin(egui::Margin::same(10))
-                                .hint_text("Write something worth keeping…"),
+                                .hint_text(t().note_hint),
                         )
                         .changed()
                     {
@@ -257,19 +295,14 @@ impl Notepad {
                     }
                 });
             ui.horizontal(|ui| {
-                let words = note.content.split_whitespace().count();
-                let characters = note.content.chars().count();
+                let (words, characters) = self.transient.note_search.counts(note, self.revision);
                 ui.weak(format!(
-                    "{words} {} · {characters} {}",
-                    if words == 1 { "word" } else { "words" },
-                    if characters == 1 {
-                        "character"
-                    } else {
-                        "characters"
-                    },
+                    "{} · {}",
+                    i18n::plural(words, t().words),
+                    i18n::plural(characters, t().characters),
                 ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(format!("Edited {}", local_time(&note.updated_at)));
+                    ui.weak(fill(t().edited, &[&local_time(&note.updated_at)]));
                 });
             });
         });
@@ -301,7 +334,7 @@ fn add_note(notes: &mut rakshamemo::model::Notes) {
 /// A full-width, two-line list entry: the title and a short muted preview.
 fn note_row(ui: &mut egui::Ui, note: &Note, selected: bool) -> egui::Response {
     let title = if note.title.trim().is_empty() {
-        "Untitled"
+        t().untitled
     } else {
         note.title.as_str()
     };
@@ -325,6 +358,15 @@ fn note_row(ui: &mut egui::Ui, note: &Note, selected: bool) -> egui::Response {
     };
     if let Some(fill) = fill {
         ui.painter().rect_filled(rect, 6.0, fill);
+    }
+    if selected {
+        // A gold pillar marks the open note.
+        let pillar = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(0.0, 8.0),
+            egui::vec2(3.0, rect.height() - 16.0),
+        );
+        ui.painter()
+            .rect_filled(pillar, 1.5, visuals.hyperlink_color);
     }
     if response.has_focus() {
         ui.painter().rect_stroke(
@@ -414,7 +456,7 @@ fn short_date(timestamp: &str) -> String {
 
 fn local_time(timestamp: &str) -> String {
     parse_local(timestamp)
-        .map(|date| date.format("%Y-%m-%d at %H:%M").to_string())
+        .map(|date| i18n::date_time(&date))
         .unwrap_or_else(|| timestamp.to_owned())
 }
 
@@ -474,21 +516,38 @@ mod tests {
         let mut notes = vec![note("Groceries", "", false), note("Plans", "", false)];
         notes[1].content = "Buy 日本語 books".into();
         let mut cache = SearchCache::default();
-        assert_eq!(cache.matches(&notes, "日本語", 1), [1]);
+        let sort = NoteSort::Title;
+        assert_eq!(cache.ordered(&notes, "日本語", 1, sort), [1]);
         notes[0].content = "日本語 too".into();
         assert_eq!(
-            cache.matches(&notes, "日本語", 1),
+            cache.ordered(&notes, "日本語", 1, sort),
             [1],
             "Same revision reuses the result"
         );
-        assert_eq!(cache.matches(&notes, "日本語", 2), [0, 1]);
-        assert_eq!(cache.matches(&notes, "", 2), [0, 1]);
+        assert_eq!(cache.ordered(&notes, "日本語", 2, sort), [0, 1]);
+        assert_eq!(cache.ordered(&notes, "", 2, sort), [0, 1]);
+        assert_eq!(
+            cache.ordered(&notes, "", 2, NoteSort::Created),
+            [1, 0],
+            "Changing the sort reorders"
+        );
         notes.pop();
         assert_eq!(
-            cache.matches(&notes, "", 2),
+            cache.ordered(&notes, "", 2, sort),
             [0],
             "Removing a note invalidates"
         );
+    }
+
+    #[test]
+    fn word_counts_are_recounted_only_after_a_change() {
+        let mut cache = SearchCache::default();
+        let mut note = note("Draft", "", false);
+        note.content = "one two  three".into();
+        assert_eq!(cache.counts(&note, 1), (3, 14));
+        note.content = "changed".into();
+        assert_eq!(cache.counts(&note, 1), (3, 14), "Same revision is cached");
+        assert_eq!(cache.counts(&note, 2), (1, 7));
     }
 
     #[test]

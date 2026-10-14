@@ -1,6 +1,8 @@
 # RakshaMemo
 
-*Rakṣā* is Sanskrit for "protection". RakshaMemo (formerly Secure Notepad) is a native Rust desktop app for encrypted notes and passwords. The interface uses egui/eframe; there is no Python, Qt, webview, or JavaScript runtime.
+*Rakṣā* is Sanskrit for "protection". RakshaMemo is a native Rust desktop app for encrypted notes and passwords. The interface uses egui/eframe; there is no Python, Qt, webview, or JavaScript runtime.
+
+The look takes its cue from Indian temple architecture. The icon is a gold lotus mandala, the flower seen from above, with a keyhole in its seed pod. Dark mode is a lamp-lit shrine at night (indigo stone, ivory text, temple gold); light mode is sandalwood and palm-leaf paper with brass accents. Primary actions are saffron. A carved frieze runs under the toolbar, cards have carved corners, a mandala sits behind the unlock form, and empty pages show a diya (oil lamp). Every ornament is drawn in code, so there are no image assets and nothing blurs at high DPI.
 
 ## Features
 
@@ -13,7 +15,8 @@
 - Master password changes, and periodic encrypted backup versions you can restore from Settings.
 - Copied credentials expire from the clipboard after 30 seconds if the clipboard still contains the copied value.
 - Encrypted export/import, with authentication before an import replaces your current vault.
-- Light/dark themes with a one-click toolbar switch, a date and time display (24- or 12-hour), and persistent preferences.
+- Temple-inspired light and dark themes with a one-click toolbar switch, a date and time display (24- or 12-hour), and persistent preferences.
+- English, French, and Japanese. The first launch follows your system language; switch at any time from the header (beside the theme button) or **Settings → Appearance**.
 - Keyboard shortcuts: **Ctrl/Cmd+N** new note or password, **Ctrl/Cmd+F** search, **Ctrl/Cmd+L** lock, **Ctrl/Cmd+S** save now, **Escape** closes dialogs.
 - An optional **Launch at sign-in** setting for opening the app at OS startup.
 - A single running instance per vault to avoid concurrent writes.
@@ -29,6 +32,8 @@ For Debian/Ubuntu Linux, install the native build dependencies:
 ```bash
 sudo apt-get install build-essential pkg-config libwayland-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libxi-dev libgl1-mesa-dev libssl-dev
 ```
+
+Titles use an installed classical serif when one is available (Palatino Linotype on Windows, Georgia on macOS, Noto Serif or DejaVu Serif on Linux) and the interface font otherwise.
 
 The Linux desktop also needs a working graphics/display session and, for native file dialogs, an XDG desktop portal supported by your desktop environment. See the [eframe documentation](https://docs.rs/eframe/0.36.2/eframe/) for platform details.
 
@@ -48,7 +53,7 @@ To build the app into this folder:
 cargo app
 ```
 
-This builds the release version and installs it as `bin/rakshamemo.exe` on Windows (with its icon and version details embedded) or `bin/rakshamemo` on Linux/macOS. Run it from there; rebuilding replaces it in place, so close the app before running `cargo app` again. The `bin` folder is ignored by git. `cargo app` is an alias defined in `.cargo/config.toml` for `cargo install --path . --root . --locked --force`.
+This builds the release version and installs it as `bin/RakshaMemo.exe` on Windows (with its icon and version details embedded) or `bin/RakshaMemo` on Linux/macOS. Run it from there; rebuilding replaces it in place, so close the app before running `cargo app` again. The `bin` folder is ignored by git. `cargo app` is an alias defined in `.cargo/config.toml` for `cargo install --path . --root . --locked --force`.
 
 `cargo build --release --locked` also works and leaves the executable in `target/release/` (or under `CARGO_TARGET_DIR`, if set). The executable uses the platform's normal system libraries; Rust and Cargo are needed for building, not for launching an already-built executable.
 
@@ -82,8 +87,6 @@ Open **Settings** and enable **Launch at sign-in**. The option is off by default
 - **Linux:** creates an XDG autostart `.desktop` entry for your desktop session.
 - **macOS:** creates a per-user LaunchAgent.
 
-If launch at sign-in was enabled under the old name, Secure Notepad, RakshaMemo replaces that registration with its own the first time it starts with the default vault.
-
 Build the app with `cargo app` and start it from `bin/` (or copy it to another permanent location) before enabling startup. Registration records that executable's absolute path, so moving or deleting it breaks automatic launch. After moving it, launch the app from its new location and turn startup off and back on. Disable the option before uninstalling. Your OS's startup/login-item controls may also disable an entry.
 
 ## Migrating from Python
@@ -92,7 +95,7 @@ The Rust app reads the original version-1 encrypted vault format directly, inclu
 
 Before upgrading, export an encrypted backup from the Python app and close it. Do not run the Python and Rust versions against the same vault at the same time: the Python version does not participate in the Rust app's instance lock.
 
-New installs keep their vault in a folder named after the app:
+The vault is kept in a folder named after the app:
 
 | Platform | Vault location |
 | --- | --- |
@@ -100,9 +103,7 @@ New installs keep their vault in a folder named after the app:
 | macOS | `~/Library/Application Support/RakshaMemo/vault.json` |
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/RakshaMemo/vault.json` |
 
-If there is no vault there but one exists in the previous `Secure Notepad` folder (the Python app's location, and the Rust app's before the rename), RakshaMemo keeps using that folder. Nothing is moved, so upgrading never shows an empty vault.
-
-The old README omitted `Wishdom` from the Windows path. If the app offers to create a vault instead of unlocking your existing one, stop and check the data location or import your encrypted backup. OS accounts and overridden data-directory environment variables can change the resolved path.
+The Python app stored its vault in a differently named folder, which RakshaMemo does not read. When upgrading from it, use **Settings → Import vault…** with an encrypted export, or move the vault and its backup files into the folder above while both apps are closed. If the app offers to create a vault instead of unlocking your existing one, stop and check the data location or import your encrypted backup. OS accounts and overridden data-directory environment variables can change the resolved path.
 
 Rust preferences are stored as `settings.json` next to the default vault. The previous Qt theme and window settings are not migrated. They do not affect the encrypted data.
 
@@ -143,3 +144,24 @@ cargo build --release --locked
 ```
 
 CI runs formatting, linting, tests, and a release build on Windows, macOS, and Linux. OS integration and graphical behavior still need a smoke test on the target desktop, particularly startup registration, clipboard access, display scaling, and native file dialogs.
+
+Interface text lives in `src/i18n.rs`, one table per language. Every language must provide every string, or the build fails.
+
+### Checking for dependency updates
+
+`scripts/check-updates.ps1` lists the direct dependencies that have newer releases on crates.io, and changes nothing:
+
+```text
+Update now with "cargo update":
+  serde_json     1.0.152   -> 1.0.154
+
+Major versions (edit Cargo.toml; code may need changes):
+  rand           0.8.8     -> 0.10.3
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check-updates.ps1   # Windows
+pwsh scripts/check-updates.ps1                                       # PowerShell 7 on any OS
+```
+
+It needs cargo and internet access.

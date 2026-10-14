@@ -1,34 +1,90 @@
-//! Use one installed face for proportional Latin and CJK text.
-//! Font files stay on the user's computer and are not redistributed.
+//! Use one installed face for proportional Latin and CJK text, and a
+//! classical serif for titles. Font files stay on the user's computer and are
+//! not redistributed.
 use eframe::egui::{Context, FontData, FontDefinitions, FontFamily};
 use std::path::PathBuf;
 
+/// The font family for titles: an installed classical serif, falling back to
+/// the proportional faces. Always defined once [`install`] has run.
+pub const DISPLAY: &str = "display";
+
+/// The first candidate that can be read, with its face index.
+fn load(candidates: Vec<(PathBuf, u32)>) -> Option<FontData> {
+    candidates.into_iter().find_map(|(path, index)| {
+        let mut data = FontData::from_owned(std::fs::read(path).ok()?);
+        data.index = index;
+        Some(data)
+    })
+}
+
 pub fn install(ctx: &Context) {
-    for (path, index) in candidates() {
-        if let Ok(bytes) = std::fs::read(path) {
-            let mut fonts = FontDefinitions::default();
-            let mut data = FontData::from_owned(bytes);
-            data.index = index;
-            fonts.font_data.insert("system-cjk".into(), data.into());
-            // Mixing egui's Latin face with a CJK fallback gives each script
-            // different ascent/line-height metrics. One primary face keeps
-            // mixed strings (e.g. Japanese room names with Latin numbers) on
-            // the same baseline at every UI size, without font-specific offsets.
-            fonts
-                .families
-                .entry(FontFamily::Proportional)
-                .or_default()
-                .insert(0, "system-cjk".into());
-            // Preserve fixed-width Latin text where Monospace is requested.
-            // Egui's remaining built-in faces also retain symbol/emoji fallback.
-            fonts
-                .families
-                .entry(FontFamily::Monospace)
-                .or_default()
-                .push("system-cjk".into());
-            ctx.set_fonts(fonts);
-            break;
-        }
+    let mut fonts = FontDefinitions::default();
+    if let Some(data) = load(candidates()) {
+        fonts.font_data.insert("system-cjk".into(), data.into());
+        // Mixing egui's Latin face with a CJK fallback gives each script
+        // different ascent/line-height metrics. One primary face keeps
+        // mixed strings (e.g. Japanese room names with Latin numbers) on
+        // the same baseline at every UI size, without font-specific offsets.
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "system-cjk".into());
+        // Preserve fixed-width Latin text where Monospace is requested.
+        // Egui's remaining built-in faces also retain symbol/emoji fallback.
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .push("system-cjk".into());
+    }
+    // Titles only ever show the app's own Latin text, so a separate face
+    // cannot misalign mixed scripts there. CJK still falls back below.
+    let mut display = Vec::new();
+    if let Some(data) = load(display_candidates()) {
+        fonts.font_data.insert(DISPLAY.into(), data.into());
+        display.push(DISPLAY.to_owned());
+    }
+    display.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
+    fonts
+        .families
+        .insert(FontFamily::Name(DISPLAY.into()), display);
+    ctx.set_fonts(fonts);
+}
+
+/// Bold classical serifs, in the spirit of carved inscriptions.
+fn display_candidates() -> Vec<(PathBuf, u32)> {
+    #[cfg(target_os = "windows")]
+    {
+        let fonts =
+            PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into()))
+                .join("Fonts");
+        ["palab.ttf", "constanb.ttf", "georgiab.ttf"]
+            .into_iter()
+            .map(|name| (fonts.join(name), 0))
+            .collect()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        [
+            "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+            "/Library/Fonts/Georgia Bold.ttf",
+        ]
+        .into_iter()
+        .map(|path| (PathBuf::from(path), 0))
+        .collect()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        [
+            "/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf",
+            "/usr/share/fonts/noto/NotoSerif-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSerif-Bold.ttf",
+        ]
+        .into_iter()
+        .map(|path| (PathBuf::from(path), 0))
+        .collect()
     }
 }
 

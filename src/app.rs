@@ -10,13 +10,16 @@ use rakshamemo::{
     generator,
     model::{self, PasswordItem},
     platform,
-    settings::Settings,
+    settings::{Language, Settings},
     store::{BackupVersion, SaveReceipt, Store},
     strength::{self, Strength},
 };
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::i18n::{self, fill, t};
+
 mod notes_page;
+mod ornament;
 mod password_editor;
 mod password_table;
 mod settings_page;
@@ -49,11 +52,8 @@ const SESSION_POLL: Duration = Duration::from_secs(5);
 
 /// The toolbar clock: weekday, date, and minutes. Hover shows the long date.
 fn clock(ui: &mut egui::Ui, clock_24h: bool) {
-    let now = chrono::Local::now();
-    let time = if clock_24h { "%H:%M" } else { "%-I:%M %p" };
-    let text = now.format(&format!("%a %Y-%m-%d  {time}")).to_string();
-    ui.label(RichText::new(text).weak())
-        .on_hover_text(now.format("%A, %B %-d, %Y").to_string());
+    let (text, long) = i18n::clock(&chrono::Local::now(), clock_24h);
+    ui.label(RichText::new(text).weak()).on_hover_text(long);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,6 +77,8 @@ struct Transient {
     /// Wall-clock time of the previous tick, for sleep detection.
     last_tick: Option<SystemTime>,
     session_checked: Option<Instant>,
+    /// The emblem's texture, uploaded the first time it is drawn.
+    logo: Option<egui::TextureHandle>,
 }
 
 /// Time until the clock's minute changes, so it can update without polling.
@@ -251,15 +253,10 @@ impl Notepad {
         custom_path: bool,
     ) -> Self {
         style::apply(&cc.egui_ctx, settings.dark_mode);
-        // Sign-in opens the default vault, so only that instance may update
-        // a registration left by the app's previous name.
-        if !custom_path && let Err(error) = platform::startup::migrate_legacy() {
-            warning = Some(format!("Could not update the startup setting: {error:#}"));
-        }
         let startup_enabled = match platform::startup::is_enabled() {
             Ok(value) => value,
             Err(error) => {
-                warning = Some(format!("Could not read startup setting: {error:#}"));
+                warning = Some(fill(t().could_not_read_startup, &[&format!("{error:#}")]));
                 false
             }
         };
@@ -279,7 +276,7 @@ impl Notepad {
             dialog: None,
             password_editor: None,
             error: warning,
-            status: "Locked".into(),
+            status: t().locked.into(),
             dirty_since: None,
             last_edit: Instant::now(),
             last_activity: Instant::now(),
@@ -299,7 +296,7 @@ impl Notepad {
         self.revision += 1;
         self.dirty_since.get_or_insert_with(Instant::now);
         self.last_edit = Instant::now();
-        self.status = "Saving changes…".into();
+        self.status = t().saving_changes.into();
     }
 
     fn apply_save_result(&mut self, revision: u64, result: anyhow::Result<SaveReceipt>) -> bool {
@@ -313,7 +310,7 @@ impl Notepad {
             Ok(()) => {
                 if revision == self.revision {
                     self.dirty_since = None;
-                    self.status = "All changes saved".into();
+                    self.status = t().all_changes_saved.into();
                 }
                 if self.save_failed {
                     self.error = None;
@@ -324,9 +321,7 @@ impl Notepad {
             Err(error) => {
                 self.save_failed = true;
                 self.last_save_attempt = Instant::now();
-                self.error = Some(format!(
-                    "Could not save. Your edits are still in this window. {error:#}"
-                ));
+                self.error = Some(fill(t().could_not_save, &[&i18n::describe(&error)]));
                 false
             }
         }
@@ -415,6 +410,32 @@ impl Notepad {
         }
     }
 
+    /// Pages call this every frame with the selected language; only an actual
+    /// change is applied and saved.
+    fn set_language(&mut self, language: Language) {
+        if language != i18n::language() {
+            self.settings.language = Some(language);
+            i18n::set(language);
+            self.persist_settings();
+        }
+    }
+
+    /// A compact language picker for the header, beside the theme toggle.
+    fn language_menu(&mut self, ui: &mut egui::Ui) {
+        let mut language = i18n::language();
+        egui::ComboBox::from_id_salt("header_language")
+            .selected_text(language.code())
+            .width(54.0)
+            .show_ui(ui, |ui| {
+                for option in Language::ALL {
+                    ui.selectable_value(&mut language, option, option.native_name());
+                }
+            })
+            .response
+            .on_hover_text(t().language);
+        self.set_language(language);
+    }
+
     fn save_now(&mut self) -> bool {
         // Only explicit flush boundaries wait; ordinary edits never do disk I/O
         // or encryption on the event thread.
@@ -431,7 +452,7 @@ impl Notepad {
         match store.save() {
             Ok(()) => {
                 self.dirty_since = None;
-                self.status = "All changes saved".into();
+                self.status = t().all_changes_saved.into();
                 if self.save_failed {
                     self.error = None;
                 }
@@ -440,9 +461,7 @@ impl Notepad {
             }
             Err(error) => {
                 self.save_failed = true;
-                self.error = Some(format!(
-                    "Could not save. Your edits are still in this window. {error:#}"
-                ));
+                self.error = Some(fill(t().could_not_save, &[&i18n::describe(&error)]));
                 false
             }
         }
@@ -475,9 +494,9 @@ impl Notepad {
         self.confirm.zeroize();
         self.auth_focus = true;
         self.transient = Transient::default();
-        self.status = "Locked".into();
+        self.status = t().locked.into();
         if let Err(error) = self.clipboard.clear(true) {
-            self.error = Some(format!("Locked, but clipboard clearing failed: {error}"));
+            self.error = Some(fill(t().locked_but_clipboard_failed, &[&error]));
         }
         // Drop text editor state, including undo history. Framework/GPU allocations are not guaranteed to be wiped.
         forget_editor_state(ctx);
@@ -486,14 +505,14 @@ impl Notepad {
 
     fn persist_settings(&mut self) {
         if let Err(error) = self.settings.save(&self.settings_path) {
-            self.error = Some(format!("Could not save settings: {error:#}"));
+            self.error = Some(fill(t().could_not_save_settings, &[&format!("{error:#}")]));
         }
     }
 
     fn copy(&mut self, text: String) {
         match self.clipboard.copy(text) {
-            Ok(()) => self.status = "Copied. Clipboard clears in 30 seconds if unchanged.".into(),
-            Err(error) => self.error = Some(format!("Could not copy: {error}")),
+            Ok(()) => self.status = t().copied_message.into(),
+            Err(error) => self.error = Some(fill(t().could_not_copy, &[&error])),
         }
     }
 
@@ -502,13 +521,13 @@ impl Notepad {
         self.complete_pending_save(true);
         let destination = rfd::FileDialog::new()
             .set_file_name("rakshamemo-backup.json")
-            .add_filter("Encrypted vault", &["json"])
+            .add_filter(t().encrypted_vault_filter, &["json"])
             .save_file();
         self.after_blocking_dialog();
         if let Some(path) = destination {
             match self.store.as_mut().unwrap().export(path) {
-                Ok(()) => self.status = "Encrypted copy exported, including pending changes".into(),
-                Err(error) => self.error = Some(format!("Export failed: {error:#}")),
+                Ok(()) => self.status = t().exported.into(),
+                Err(error) => self.error = Some(fill(t().export_failed, &[&format!("{error:#}")])),
             }
         }
     }
@@ -544,12 +563,11 @@ impl Notepad {
 
     fn start_unlock(&mut self, create: bool, ctx: &egui::Context) {
         if self.auth.is_empty() {
-            self.error = Some("Enter your master password.".into());
+            self.error = Some(t().enter_master_password.into());
             return;
         }
         if create && (self.auth.chars().count() < 12 || *self.auth != *self.confirm) {
-            self.error =
-                Some("Use at least 12 characters and make sure both passwords match.".into());
+            self.error = Some(t().create_password_rules.into());
             return;
         }
         let password = std::mem::replace(&mut self.auth, Zeroizing::new(String::new()));
@@ -584,18 +602,18 @@ impl Notepad {
                 self.unlocking = None;
                 self.auth_focus = true;
                 self.last_activity = Instant::now();
-                self.status = "Vault unlocked".into();
+                self.status = t().vault_unlocked.into();
                 self.error = None;
             }
             Ok(Err(error)) => {
                 self.unlocking = None;
                 self.auth_focus = true;
-                self.error = Some(format!("Could not unlock vault: {error:#}"));
+                self.error = Some(fill(t().could_not_unlock, &[&i18n::describe(&error)]));
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.unlocking = None;
                 self.auth_focus = true;
-                self.error = Some("Unlock worker stopped unexpectedly. Please try again.".into());
+                self.error = Some(t().unlock_worker_stopped.into());
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -609,48 +627,81 @@ impl Notepad {
                 if style::theme_toggle(ui, self.settings.dark_mode).clicked() {
                     self.set_dark_mode(ui.ctx(), !self.settings.dark_mode);
                 }
+                self.language_menu(ui);
                 clock(ui, self.settings.clock_24h);
             });
         });
-        ui.vertical_centered(|ui| {
-            // Approximate content height (card plus title and footer) for centering.
-            let content_height = if create { 560.0 } else { 440.0 };
-            ui.add_space(((ui.available_height() - content_height) / 2.0).max(16.0));
-            ui.label(RichText::new("RakshaMemo").size(30.0).strong());
-            ui.weak("A private place for your notes and passwords.");
-            ui.add_space(20.0);
-            egui::Frame::new()
-                .fill(ui.visuals().window_fill)
-                .stroke(ui.visuals().window_stroke)
-                .corner_radius(10)
-                .inner_margin(24)
-                .show(ui, |ui| {
-                    ui.set_width(340.0);
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        self.auth_form(ui, create);
+        // Scrolls only when the window is too short for the form and its messages.
+        egui::ScrollArea::vertical()
+            .id_salt("unlock_page")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // The lamp glow and mandala sit behind the form; their slot is
+                // reserved now and filled once the form's position is known.
+                let backdrop = ui.painter().add(egui::Shape::Noop);
+                ui.vertical_centered(|ui| {
+                    // Approximate content height (emblem, title, card, and footer) for centering.
+                    let content_height = if create { 650.0 } else { 530.0 };
+                    ui.add_space(((ui.available_height() - content_height) / 2.0).max(16.0));
+                    ornament::logo(ui, &mut self.transient.logo, 72.0);
+                    ui.add_space(4.0);
+                    ornament::wordmark(ui, 34.0);
+                    ui.weak(t().tagline);
+                    ui.add_space(20.0);
+                    let card = ornament::card(ui, 24, |ui| {
+                        ui.set_width(340.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            self.auth_form(ui, create);
+                        });
+                    })
+                    .response
+                    .rect;
+                    // A lotus crowns the card, set into its top edge.
+                    let gap = ui.visuals().window_fill;
+                    let top = card.center_top();
+                    ui.painter().circle_filled(top, 13.0, gap);
+                    ui.painter().circle_stroke(
+                        top,
+                        13.0,
+                        egui::Stroke::new(1.0, ui.visuals().window_stroke.color),
+                    );
+                    ornament::lotus(
+                        ui.painter(),
+                        top + egui::vec2(0.0, 6.0),
+                        13.0,
+                        ornament::gold(ui, 0.95),
+                        gap,
+                    );
+                    let center = card.center();
+                    let glow = ornament::gold(ui, if ui.visuals().dark_mode { 0.16 } else { 0.22 });
+                    let lines =
+                        ornament::gold(ui, if ui.visuals().dark_mode { 0.12 } else { 0.18 });
+                    let mut shapes = vec![ornament::glow(center, 380.0, glow)];
+                    shapes.extend(ornament::mandala(center, 250.0, lines));
+                    ui.painter().set(backdrop, egui::Shape::Vec(shapes));
+                    ui.add_space(16.0);
+                    let path = self.vault_path.display().to_string();
+                    ui.scope(|ui| {
+                        ui.set_max_width(420.0);
+                        ui.add(egui::Label::new(RichText::new(&path).small().weak()).truncate())
+                            .on_hover_text(path);
                     });
+                    ui.weak(t().vault_stays_local);
                 });
-            ui.add_space(16.0);
-            let path = self.vault_path.display().to_string();
-            ui.scope(|ui| {
-                ui.set_max_width(420.0);
-                ui.add(egui::Label::new(RichText::new(&path).small().weak()).truncate())
-                    .on_hover_text(path);
             });
-            ui.weak("Your vault stays local. It always starts locked.");
-        });
     }
 
     fn auth_form(&mut self, ui: &mut egui::Ui, create: bool) {
+        let text = t();
         ui.heading(if create {
-            "Create your vault"
+            text.create_vault_title
         } else {
-            "Unlock your vault"
+            text.unlock_vault_title
         });
         ui.weak(if create {
-            "Choose a master password for your vault."
+            text.create_vault_intro
         } else {
-            "Enter your master password to continue."
+            text.unlock_vault_intro
         });
         ui.add_space(12.0);
         fn field(text: &mut String) -> egui::TextEdit<'_> {
@@ -663,7 +714,7 @@ impl Notepad {
         ui.add_enabled_ui(self.unlocking.is_none(), |ui| {
             let response = ui.add(
                 field(&mut self.auth)
-                    .hint_text("Master password")
+                    .hint_text(text.master_password_hint)
                     .id_salt("master"),
             );
             if self.auth_focus {
@@ -676,7 +727,7 @@ impl Notepad {
             if create {
                 ui.add(
                     field(&mut self.confirm)
-                        .hint_text("Confirm password")
+                        .hint_text(text.confirm_password_hint)
                         .id_salt("confirm"),
                 );
                 let length = self.auth.chars().count();
@@ -689,7 +740,7 @@ impl Notepad {
                     (String::new(), ui.visuals().weak_text_color())
                 } else {
                     (
-                        format!("At least 12 characters ({length}/12)."),
+                        fill(text.at_least_12, &[&length]),
                         if length == 0 {
                             ui.visuals().weak_text_color()
                         } else {
@@ -701,15 +752,15 @@ impl Notepad {
                     ui.label(RichText::new(hint).color(color));
                 }
                 if !self.confirm.is_empty() && *self.confirm != *self.auth {
-                    ui.colored_label(ui.visuals().warn_fg_color, "Passwords do not match yet.");
+                    ui.colored_label(ui.visuals().warn_fg_color, text.passwords_do_not_match);
                 }
-                ui.weak("Keep it safe: there is no recovery.");
+                ui.weak(text.no_recovery);
             }
             ui.add_space(8.0);
             let label = if create {
-                "Create encrypted vault"
+                text.create_vault_button
             } else {
-                "Unlock"
+                text.unlock_button
             };
             let clicked = style::primary(ui, |ui| {
                 ui.add_sized([ui.available_width(), 36.0], egui::Button::new(label))
@@ -726,7 +777,7 @@ impl Notepad {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.weak("Deriving your encryption key…");
+                ui.weak(text.deriving_key);
             });
         }
         if let Some(error) = &self.error {
@@ -753,17 +804,17 @@ impl Notepad {
                         ui.add(egui::Label::new(RichText::new(error).color(color)).wrap());
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Dismiss").clicked() {
+                        if ui.button(t().dismiss).clicked() {
                             self.error = None;
                         }
                     });
                 });
                 if self.dirty_since.is_some() {
                     ui.horizontal(|ui| {
-                        if ui.button("Export unsaved vault…").clicked() {
+                        if ui.button(t().export_unsaved).clicked() {
                             self.export_snapshot();
                         }
-                        if style::danger_button(ui, "Discard edits and lock…").clicked() {
+                        if style::danger_button(ui, t().discard_and_lock_ellipsis).clicked() {
                             self.dialog = Some(Dialog::DiscardEdits);
                         }
                     });
@@ -774,12 +825,13 @@ impl Notepad {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("RakshaMemo").size(19.0).strong());
-            ui.separator();
+            ornament::logo(ui, &mut self.transient.logo, 26.0);
+            ornament::wordmark(ui, 21.0);
+            ui.add_space(10.0);
             for (tab, label) in [
-                (Tab::Notes, "Notes"),
-                (Tab::Passwords, "Passwords"),
-                (Tab::Settings, "Settings"),
+                (Tab::Notes, t().tab_notes),
+                (Tab::Passwords, t().tab_passwords),
+                (Tab::Settings, t().tab_settings),
             ] {
                 if style::nav_tab(ui, self.tab == tab, label).clicked() {
                     self.register_open_category();
@@ -791,12 +843,13 @@ impl Notepad {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Lock").on_hover_text("Ctrl/Cmd+L").clicked() {
+                if ui.button(t().lock).on_hover_text("Ctrl/Cmd+L").clicked() {
                     self.lock(ui.ctx());
                 }
                 if style::theme_toggle(ui, self.settings.dark_mode).clicked() {
                     self.set_dark_mode(ui.ctx(), !self.settings.dark_mode);
                 }
+                self.language_menu(ui);
                 // A fixed slot keeps the clock still as the status text changes.
                 ui.allocate_ui_with_layout(
                     egui::vec2(110.0, ui.spacing().interact_size.y),
@@ -810,22 +863,24 @@ impl Notepad {
                 }
             });
         });
-        ui.separator();
+        ornament::frieze(ui);
     }
 
     fn save_status(&self, ui: &mut egui::Ui) {
+        let text = t();
         let (label, color) = if self.save_failed {
-            ("Save failed", ui.visuals().error_fg_color)
+            (text.status_save_failed, ui.visuals().error_fg_color)
         } else if self.dirty_since.is_some() || self.pending_save.is_some() {
-            ("Saving…", ui.visuals().warn_fg_color)
-        } else if self.status.starts_with("Copied") {
-            ("Copied", ui.visuals().hyperlink_color)
+            (text.status_saving, ui.visuals().warn_fg_color)
+        } else if self.clipboard.copied.is_some() {
+            // Until the copied value expires from the clipboard.
+            (text.status_copied, ui.visuals().hyperlink_color)
         } else {
-            ("Saved", ui.visuals().weak_text_color())
+            (text.status_saved, ui.visuals().weak_text_color())
         };
         ui.label(RichText::new(format!("● {label}")).color(color))
             .on_hover_text(if self.save_failed {
-                self.error.as_deref().unwrap_or("Save failed")
+                self.error.as_deref().unwrap_or(text.status_save_failed)
             } else {
                 &self.status
             });
@@ -836,7 +891,7 @@ impl Notepad {
         self.password_table.clear_sensitive();
         self.query.zeroize();
         let item = PasswordItem {
-            title: "Untitled".into(),
+            title: t().untitled.into(),
             kind: self.category.clone(),
             ..Default::default()
         };
@@ -1015,7 +1070,7 @@ impl Notepad {
             value.zeroize();
             *value = normalized;
             if field == Field::Title && value.is_empty() {
-                value.push_str("Untitled");
+                value.push_str(t().untitled);
             }
         }
         let target = match field {
@@ -1038,7 +1093,7 @@ impl Notepad {
         editor.item.updated_at = model::now();
         let mut saved = editor.item.clone();
         saved.title = match saved.title.trim() {
-            "" => "Untitled".into(),
+            "" => t().untitled.into(),
             title => title.into(),
         };
         saved.kind = saved.kind.trim().to_owned();
@@ -1070,6 +1125,7 @@ impl Notepad {
         {
             return;
         }
+        let text = t();
         egui::Modal::new(egui::Id::new("vault_dialog")).show(ctx, |ui| {
             style::page(ui);
             ui.set_width((ctx.content_rect().width() - 64.0).clamp(280.0, 640.0));
@@ -1080,91 +1136,201 @@ impl Notepad {
                 .max_height(max_height)
                 .min_scrolled_height(max_height)
                 .show(ui, |ui| {
-            match &mut dialog {
-                Dialog::DiscardEdits => {
-                    ui.heading("Discard unsaved changes and lock?");
-                    ui.label("Changes that have not already been saved will be lost. Export an encrypted copy first if you want to keep them. Any save already in progress will finish before locking.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() { close = true; }
-                        if style::destructive_button(ui, "Discard changes and lock").clicked() { discard = true; close = true; }
-                    });
-                }
-                Dialog::DeleteNote(id) | Dialog::DeletePassword(id) => {
-                    let data = &self.store.as_ref().unwrap().data;
-                    let title = if deleting_note {
-                        data.notes.items.iter().find(|note| note.id == *id).map(|note| note.title.as_str())
-                    } else {
-                        data.passwords.iter().find(|item| item.id == *id).map(|item| item.title.as_str())
-                    }.filter(|title| !title.is_empty()).unwrap_or("Untitled");
-                    let action = if deleting_note { "Delete note" } else { "Delete password" };
-                    ui.heading(format!("{action}?"));
-                    ui.label(RichText::new(title).strong());
-                    ui.label("The item will be removed from this vault. This cannot be undone in the editor.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() { close = true; }
-                        if style::destructive_button(ui, action).clicked() { close = true; changed = true; }
-                    });
-                }
-                Dialog::Types { selected, name } => {
-                    ui.heading("Manage categories");
-                    ui.label("Categories are optional groups, such as Work or Personal, that you can filter in the password table.");
-                    ui.label("Create a category by typing its name while editing a password. Here you can rename a group or remove one that is no longer used.");
-                    ui.add_space(8.0);
-                    egui::ComboBox::from_id_salt("manage_categories").selected_text(if selected.is_empty() { "Choose a category" } else { selected.as_str() }).show_ui(ui, |ui| {
-                        for kind in &self.store.as_ref().unwrap().data.meta.types {
-                            if ui.selectable_value(selected, kind.clone(), kind).clicked() { *name = kind.clone(); }
+                    match &mut dialog {
+                        Dialog::DiscardEdits => {
+                            ui.heading(text.discard_title);
+                            ui.label(text.discard_body);
+                            ui.horizontal(|ui| {
+                                if ui.button(text.cancel).clicked() {
+                                    close = true;
+                                }
+                                if style::destructive_button(ui, text.discard_and_lock).clicked() {
+                                    discard = true;
+                                    close = true;
+                                }
+                            });
                         }
-                    });
-                    ui.label("Category name");
-                    ui.add(egui::TextEdit::singleline(name).id_salt("rename_category").hint_text("Select a category to rename").desired_width(f32::INFINITY));
-                    let usage = self.store.as_ref().unwrap().data.passwords.iter().filter(|item| item.kind == *selected).count();
-                    if !selected.is_empty() {
-                        ui.label(format!("Used by {usage} {}", if usage == 1 { "password" } else { "passwords" }));
+                        Dialog::DeleteNote(id) | Dialog::DeletePassword(id) => {
+                            let data = &self.store.as_ref().unwrap().data;
+                            let title = if deleting_note {
+                                data.notes
+                                    .items
+                                    .iter()
+                                    .find(|note| note.id == *id)
+                                    .map(|note| note.title.as_str())
+                            } else {
+                                data.passwords
+                                    .iter()
+                                    .find(|item| item.id == *id)
+                                    .map(|item| item.title.as_str())
+                            }
+                            .filter(|title| !title.is_empty())
+                            .unwrap_or(text.untitled);
+                            let (heading, action) = if deleting_note {
+                                (text.delete_note_title, text.delete_note)
+                            } else {
+                                (text.delete_password_title, text.delete_password)
+                            };
+                            ui.heading(heading);
+                            ui.label(RichText::new(title).strong());
+                            ui.label(text.delete_body);
+                            ui.horizontal(|ui| {
+                                if ui.button(text.cancel).clicked() {
+                                    close = true;
+                                }
+                                if style::destructive_button(ui, action).clicked() {
+                                    close = true;
+                                    changed = true;
+                                }
+                            });
+                        }
+                        Dialog::Types { selected, name } => {
+                            ui.heading(text.manage_categories);
+                            ui.label(text.manage_categories_body);
+                            ui.label(text.manage_categories_how);
+                            ui.add_space(8.0);
+                            egui::ComboBox::from_id_salt("manage_categories")
+                                .selected_text(if selected.is_empty() {
+                                    text.choose_category
+                                } else {
+                                    selected.as_str()
+                                })
+                                .show_ui(ui, |ui| {
+                                    for kind in &self.store.as_ref().unwrap().data.meta.types {
+                                        if ui
+                                            .selectable_value(selected, kind.clone(), kind)
+                                            .clicked()
+                                        {
+                                            *name = kind.clone();
+                                        }
+                                    }
+                                });
+                            ui.label(text.category_name);
+                            ui.add(
+                                egui::TextEdit::singleline(name)
+                                    .id_salt("rename_category")
+                                    .hint_text(text.rename_hint)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let usage = self
+                                .store
+                                .as_ref()
+                                .unwrap()
+                                .data
+                                .passwords
+                                .iter()
+                                .filter(|item| item.kind == *selected)
+                                .count();
+                            if !selected.is_empty() {
+                                ui.label(i18n::plural(usage, text.used_by));
+                            }
+                            ui.horizontal(|ui| {
+                                let data = &mut self.store.as_mut().unwrap().data;
+                                if ui
+                                    .add_enabled(
+                                        !selected.is_empty() && !name.trim().is_empty(),
+                                        egui::Button::new(text.rename),
+                                    )
+                                    .clicked()
+                                {
+                                    let value = name.trim().to_string();
+                                    if !data.meta.types.contains(&value) || *selected == value {
+                                        for kind in &mut data.meta.types {
+                                            if kind == selected {
+                                                *kind = value.clone();
+                                            }
+                                        }
+                                        for item in &mut data.passwords {
+                                            if item.kind == *selected {
+                                                item.kind = value.clone();
+                                                item.updated_at = model::now();
+                                            }
+                                        }
+                                        if self.category == *selected {
+                                            self.category = value.clone();
+                                        }
+                                        *selected = value;
+                                        changed = true;
+                                    } else {
+                                        self.error = Some(text.category_exists.into());
+                                    }
+                                }
+                                if ui
+                                    .add_enabled_ui(!selected.is_empty() && usage == 0, |ui| {
+                                        style::danger_button(ui, text.remove_unused_category)
+                                    })
+                                    .inner
+                                    .on_disabled_hover_text(text.remove_unused_hover)
+                                    .clicked()
+                                {
+                                    if data.passwords.iter().any(|item| item.kind == *selected) {
+                                        self.error = Some(text.category_in_use.into());
+                                    } else {
+                                        data.meta.types.retain(|kind| kind != selected);
+                                        if self.category == *selected {
+                                            self.category.clear();
+                                        }
+                                        selected.clear();
+                                        name.clear();
+                                        changed = true;
+                                    }
+                                }
+                            });
+                            if style::primary_button(ui, text.done).clicked() {
+                                close = true;
+                            }
+                        }
+                        Dialog::ChangePassword(change) => {
+                            close = self.change_password_ui(ui, change)
+                        }
+                        Dialog::Versions { versions, selected } => {
+                            (close, next) = vault_dialogs::versions_ui(ui, versions, selected);
+                        }
+                        Dialog::Import { path, password } => {
+                            ui.heading(text.import_title);
+                            ui.label(path.display().to_string());
+                            ui.label(text.import_body);
+                            ui.label(text.import_backup_kept);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut **password)
+                                    .password(true)
+                                    .hint_text(text.import_password_hint),
+                            );
+                            ui.horizontal(|ui| {
+                                if ui.button(text.cancel).clicked() {
+                                    close = true;
+                                }
+                                if style::destructive_button(ui, text.authenticate_and_replace)
+                                    .clicked()
+                                    && self.save_now()
+                                {
+                                    match self.store.as_mut().unwrap().import(path, password) {
+                                        Ok(()) => {
+                                            close = true;
+                                            self.password_editor = None;
+                                            self.query.zeroize();
+                                            self.category.zeroize();
+                                            self.password_table =
+                                                password_table::TableState::default();
+                                            self.status = text.imported.into();
+                                            self.transient.note_search = Default::default();
+                                            forget_editor_state(ctx);
+                                        }
+                                        Err(error) => {
+                                            self.error = Some(fill(
+                                                text.import_failed,
+                                                &[&i18n::describe(&error)],
+                                            ))
+                                        }
+                                    }
+                                }
+                            });
+                        }
                     }
-                    ui.horizontal(|ui| {
-                        let data = &mut self.store.as_mut().unwrap().data;
-                        if ui.add_enabled(!selected.is_empty() && !name.trim().is_empty(), egui::Button::new("Rename")).clicked() {
-                            let value = name.trim().to_string();
-                            if !data.meta.types.contains(&value) || *selected == value {
-                                for kind in &mut data.meta.types { if kind == selected { *kind = value.clone(); } }
-                                for item in &mut data.passwords { if item.kind == *selected { item.kind = value.clone(); item.updated_at = model::now(); } }
-                                if self.category == *selected { self.category = value.clone(); }
-                                *selected = value; changed = true;
-                            } else { self.error = Some("That category already exists.".into()); }
-                        }
-                        if ui.add_enabled_ui(!selected.is_empty() && usage == 0, |ui| style::danger_button(ui, "Remove unused category")).inner.on_disabled_hover_text("Only categories with no passwords can be removed.").clicked() {
-                            if data.passwords.iter().any(|item| item.kind == *selected) { self.error = Some("This category is still used by a password.".into()); }
-                            else {
-                                data.meta.types.retain(|kind| kind != selected);
-                                if self.category == *selected { self.category.clear(); }
-                                selected.clear(); name.clear(); changed = true;
-                            }
-                        }
-                    });
-                    if style::primary_button(ui, "Done").clicked() { close = true; }
-                }
-                Dialog::ChangePassword(change) => close = self.change_password_ui(ui, change),
-                Dialog::Versions { versions, selected } => {
-                    (close, next) = vault_dialogs::versions_ui(ui, versions, selected);
-                }
-                Dialog::Import { path, password } => {
-                    ui.heading("Replace current vault?");
-                    ui.label(path.display().to_string());
-                    ui.label("Enter this file’s master password. Its contents will replace your current notes and passwords after validation.");
-                    ui.label("A separate encrypted backup of your current vault will be kept.");
-                    ui.add(egui::TextEdit::singleline(&mut **password).password(true).hint_text("Imported vault password"));
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() { close = true; }
-                        if style::destructive_button(ui, "Authenticate and replace").clicked() && self.save_now() {
-                            match self.store.as_mut().unwrap().import(path, password) {
-                                Ok(()) => { close = true; self.password_editor = None; self.query.zeroize(); self.category.zeroize(); self.password_table = password_table::TableState::default(); self.status = "Imported and authenticated vault".into(); self.transient.note_search = Default::default(); forget_editor_state(ctx); }
-                                Err(error) => self.error = Some(format!("Import failed; current vault kept: {error:#}")),
-                            }
-                        }
-                    });
-                }
-            }
-            if let Some(error) = &self.error { ui.add_space(8.0); ui.colored_label(ui.visuals().error_fg_color, error); }
+                    if let Some(error) = &self.error {
+                        ui.add_space(8.0);
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
                 });
         });
         if discard {
@@ -1233,7 +1399,7 @@ impl Notepad {
         }
         self.autosave(ctx);
         if let Err(error) = self.clipboard.clear(false) {
-            self.error = Some(format!("Could not clear clipboard: {error}"));
+            self.error = Some(fill(t().could_not_clear_clipboard, &[&error]));
         }
         // Background workers request a repaint when they finish, so only
         // timers need a wake-up. An idle window otherwise stays asleep.

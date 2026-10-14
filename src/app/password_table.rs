@@ -9,10 +9,13 @@ use std::hash::{Hash, Hasher};
 use zeroize::Zeroizing;
 
 use super::style;
+use crate::i18n::{self, fill, t};
 
 const ROW_HEIGHT: f32 = 32.0;
 const HEADER_HEIGHT: f32 = 36.0;
 const MIN_TABLE_WIDTH: f32 = 860.0;
+/// The actions column in English; longer translations widen it.
+const ACTIONS_WIDTH: f32 = 98.0;
 const EXTRA_EDIT_HEIGHT: f32 = 128.0;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -296,14 +299,12 @@ pub(super) fn show(
         let search = ui
             .add(
                 egui::TextEdit::singleline(query)
-                    .hint_text("Search passwords…")
+                    .hint_text(t().search_passwords)
                     .margin(egui::vec2(8.0, 6.0))
                     .min_size(egui::vec2(0.0, 32.0))
                     .desired_width(search_width),
             )
-            .on_hover_text(
-                "Search titles, usernames, categories, and extra information (Ctrl/Cmd+F)",
-            );
+            .on_hover_text(t().search_passwords_hover);
         if focus_search {
             search.request_focus();
         }
@@ -311,30 +312,32 @@ pub(super) fn show(
         egui::ComboBox::from_id_salt("password_category")
             .width(155.0)
             .selected_text(if category.is_empty() {
-                "All categories"
+                t().all_categories
             } else {
                 category.as_str()
             })
             .show_ui(ui, |ui| {
                 ui.set_max_width(330.0);
-                ui.label("Categories group your passwords, such as Work or Personal.");
+                ui.label(t().categories_explained);
                 ui.separator();
                 filters_changed |= ui
-                    .selectable_value(category, String::new(), "All categories")
+                    .selectable_value(category, String::new(), t().all_categories)
                     .changed();
                 for kind in types {
                     filters_changed |= ui.selectable_value(category, kind.clone(), kind).changed();
                 }
                 ui.separator();
-                if ui.button("Manage categories…").clicked() {
+                if ui.button(t().manage_categories_ellipsis).clicked() {
                     actions.push(Action::ManageCategories);
                     ui.close();
                 }
             });
-        ui.menu_button("Columns", |ui| {
-            filters_changed |= ui.checkbox(&mut state.show_category, "Category").changed();
+        ui.menu_button(t().columns, |ui| {
             filters_changed |= ui
-                .checkbox(&mut state.show_updated, "Updated date")
+                .checkbox(&mut state.show_category, t().column_category)
+                .changed();
+            filters_changed |= ui
+                .checkbox(&mut state.show_updated, t().updated_date)
                 .changed();
         });
         if matches!(state.sort, SortColumn::Category) && !state.show_category
@@ -343,12 +346,12 @@ pub(super) fn show(
             state.sort = SortColumn::Title;
             state.descending = false;
         }
-        if (!query.is_empty() || !category.is_empty()) && ui.button("Clear").clicked() {
+        if (!query.is_empty() || !category.is_empty()) && ui.button(t().clear).clicked() {
             query.clear();
             category.clear();
             filters_changed = true;
         }
-        if style::primary_button(ui, "+ New password")
+        if style::primary_button(ui, t().new_password_button)
             .on_hover_text("Ctrl/Cmd+N")
             .clicked()
         {
@@ -364,21 +367,15 @@ pub(super) fn show(
         let count = state.rows.len();
         ui.label(
             egui::RichText::new(if count == items.len() {
-                format!(
-                    "{count} {}",
-                    if count == 1 { "password" } else { "passwords" }
-                )
+                i18n::plural(count, t().password_count)
             } else {
-                format!("{count} of {} passwords", items.len())
+                fill(t().filtered_count, &[&count, &items.len()])
             })
             .weak(),
         );
         if ui.available_width() >= 500.0 {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new("Click a value to edit · Changes save automatically")
-                        .weak(),
-                );
+                ui.label(egui::RichText::new(t().table_hint).weak());
             });
         }
     });
@@ -389,17 +386,19 @@ pub(super) fn show(
             ui.vertical_centered(|ui| {
                 ui.add_space(32.0);
                 if items.is_empty() {
-                    ui.strong("Your passwords, neatly organized");
-                    ui.weak("Add an account to keep its login details here.");
+                    super::ornament::diya(ui, 96.0);
+                    ui.add_space(6.0);
+                    ui.strong(t().passwords_empty_title);
+                    ui.weak(t().passwords_empty_body);
                     ui.add_space(10.0);
-                    if style::primary_button(ui, "+ Add your first password").clicked() {
+                    if style::primary_button(ui, t().add_first_password).clicked() {
                         actions.push(Action::New);
                     }
                 } else {
-                    ui.strong("No matching passwords");
-                    ui.weak("Try another search or category.");
+                    ui.strong(t().no_matching_passwords);
+                    ui.weak(t().try_another_search);
                     ui.add_space(10.0);
-                    if ui.button("Clear filters").clicked() {
+                    if ui.button(t().clear_filters).clicked() {
                         query.clear();
                         category.clear();
                     }
@@ -409,8 +408,21 @@ pub(super) fn show(
         return actions;
     }
 
+    // The Edit button's label differs by language; the column fits it and
+    // the delete icon, and never shrinks below its English width.
+    let edit_label = egui::WidgetText::from(t().edit)
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Button,
+        )
+        .size()
+        .x;
+    let actions_width = (edit_label + 72.0).max(ACTIONS_WIDTH);
     let min_width = MIN_TABLE_WIDTH + if state.show_updated { 115.0 } else { 0.0 }
-        - if state.show_category { 0.0 } else { 100.0 };
+        - if state.show_category { 0.0 } else { 100.0 }
+        + (actions_width - ACTIONS_WIDTH);
     let table_width = ui.available_width().max(min_width);
     let table_height = (ui.available_height() - 18.0).max(80.0);
     let mut next_sort = None;
@@ -442,25 +454,26 @@ pub(super) fn show(
             if state.show_updated {
                 table = table.column(Column::initial(105.0).at_least(100.0).clip(true));
             }
-            table = table.column(Column::exact(98.0));
+            table = table.column(Column::exact(actions_width));
             if std::mem::take(&mut state.reset_scroll) {
                 table = table.vertical_scroll_offset(0.0);
             }
             table
                 .header(HEADER_HEIGHT, |mut row| {
+                    let text = t();
                     let mut columns = vec![
-                        ("Title", Some(SortColumn::Title)),
-                        ("Username", Some(SortColumn::Username)),
-                        ("Password", None),
+                        (text.column_title, Some(SortColumn::Title)),
+                        (text.column_username, Some(SortColumn::Username)),
+                        (text.column_password, None),
                     ];
                     if state.show_category {
-                        columns.push(("Category", Some(SortColumn::Category)));
+                        columns.push((text.column_category, Some(SortColumn::Category)));
                     }
-                    columns.push(("Extra information", None));
+                    columns.push((text.column_extra, None));
                     if state.show_updated {
-                        columns.push(("Updated", Some(SortColumn::Updated)));
+                        columns.push((text.column_updated, Some(SortColumn::Updated)));
                     }
-                    columns.push(("Actions", None));
+                    columns.push((text.column_actions, None));
                     for (label, column) in columns {
                         row.col(|ui| {
                             if let Some(column) = column {
@@ -469,7 +482,7 @@ pub(super) fn show(
                                         egui::Button::new(egui::RichText::new(label).strong())
                                             .frame(false),
                                     )
-                                    .on_hover_text(format!("Sort by {}", label.to_lowercase()))
+                                    .on_hover_text(fill(text.sort_by, &[&label.to_lowercase()]))
                                     .clicked()
                                 {
                                     next_sort = Some(column);
@@ -540,7 +553,7 @@ pub(super) fn show(
                                 &mut actions,
                                 &mut finish_requested,
                             );
-                            if copy_button(ui, "Copy username").clicked() {
+                            if copy_button(ui, t().copy_username).clicked() {
                                 actions.push(Action::CopyUsername(item.id.clone()));
                             }
                         });
@@ -564,7 +577,7 @@ pub(super) fn show(
                                 }
                                 ui.ctx().request_repaint();
                             }
-                            if copy_button(ui, "Copy password").clicked() {
+                            if copy_button(ui, t().copy_password).clicked() {
                                 actions.push(Action::CopyPassword(item.id.clone()));
                             }
                         });
@@ -601,7 +614,7 @@ pub(super) fn show(
                         }
                         row.col(|ui| {
                             ui.spacing_mut().item_spacing.x = 5.0;
-                            if ui.button("Edit").clicked() {
+                            if ui.button(t().edit).clicked() {
                                 actions.push(Action::Edit(item.id.clone()));
                             }
                             if delete_button(ui).clicked() {
@@ -675,7 +688,8 @@ fn extra_tooltip(extra: &str) -> String {
     let mut characters = extra.chars();
     let mut tooltip: String = characters.by_ref().take(1_200).collect();
     if characters.next().is_some() {
-        tooltip.push_str("…\n\nOpen this password to read all extra information.");
+        tooltip.push_str("…\n\n");
+        tooltip.push_str(t().read_all_extra);
     }
     tooltip
 }
@@ -731,9 +745,7 @@ fn editable_cell(
                             )
                         })
                         .inner
-                        .on_hover_text(
-                            "Changes save automatically. Ctrl+Enter or Escape finishes editing.",
-                        )
+                        .on_hover_text(t().inline_extra_hover)
                 } else {
                     ui.add_sized(
                         egui::vec2(width, 28.0),
@@ -763,7 +775,7 @@ fn editable_cell(
                 let text = match field {
                     Field::Title => {
                         if item.title.is_empty() {
-                            "Untitled"
+                            t().untitled
                         } else {
                             &item.title
                         }
@@ -819,11 +831,11 @@ fn editable_cell(
                         egui::WidgetType::Button,
                         ui.is_enabled(),
                         match field {
-                            Field::Title => "Edit title",
-                            Field::Username => "Edit username",
-                            Field::Password => "Edit password",
-                            Field::Category => "Edit category",
-                            Field::Extra => "Edit extra information",
+                            Field::Title => t().edit_title,
+                            Field::Username => t().edit_username,
+                            Field::Password => t().edit_password,
+                            Field::Category => t().edit_category,
+                            Field::Extra => t().edit_extra,
                         },
                     )
                 });
@@ -844,19 +856,19 @@ fn editable_cell(
                             Zeroizing::new(characters.by_ref().take(512).collect::<String>());
                         ui.add(egui::Label::new(preview.as_str()).wrap());
                         if characters.next().is_some() {
-                            ui.weak("Open Edit to see the full value.");
+                            ui.weak(t().open_edit_for_full_value);
                         } else {
-                            ui.weak("Click to edit · Use the eye to hide");
+                            ui.weak(t().click_to_edit_eye);
                         }
                     })
                 } else if field == Field::Extra && !item.extra.trim().is_empty() {
                     response.on_hover_ui(|ui| {
                         ui.set_max_width(480.0);
                         ui.label(extra_tooltip(&item.extra));
-                        ui.weak("Click to edit here. Use Edit for the full page.");
+                        ui.weak(t().click_to_edit_here);
                     })
                 } else {
-                    response.on_hover_text("Click to edit · Changes save automatically")
+                    response.on_hover_text(t().click_to_edit)
                 };
                 if response.clicked() {
                     state.next_edit = Some((item.id.clone(), field));
@@ -908,9 +920,9 @@ fn eye_button(ui: &mut egui::Ui, revealed: bool) -> egui::Response {
     let (rect, response, stroke) = icon_button(
         ui,
         if revealed {
-            "Hide password"
+            t().hide_password
         } else {
-            "Show password"
+            t().show_password
         },
     );
     let center = rect.center();
@@ -944,7 +956,7 @@ fn eye_button(ui: &mut egui::Ui, revealed: bool) -> egui::Response {
 
 fn delete_button(ui: &mut egui::Ui) -> egui::Response {
     style::danger(ui, |ui| {
-        let (rect, response, stroke) = icon_button(ui, "Delete password…");
+        let (rect, response, stroke) = icon_button(ui, t().delete_password_ellipsis);
         let center = rect.center();
         ui.painter().rect_stroke(
             egui::Rect::from_center_size(center + egui::vec2(0.0, 1.5), egui::vec2(8.0, 9.0)),

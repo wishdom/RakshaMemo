@@ -1,7 +1,7 @@
 # Compatibility fixtures
 
 These files contain synthetic test data, encrypted by the original Python
-`secure_notepad.crypto.crypto.encrypt_json` implementation before its removal.
+app's `crypto.encrypt_json` implementation before its removal.
 Both use the test password `Compatibility test 🔐` and the original default
 Argon2id parameters (3 passes, 64 MiB, 2 lanes).
 

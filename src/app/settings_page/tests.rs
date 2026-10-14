@@ -97,6 +97,27 @@ fn clicking_a_theme_option_applies_it_and_persists_preferences() {
 }
 
 #[test]
+fn choosing_a_language_translates_the_page_and_persists_it() {
+    use rakshamemo::settings::{Language, Settings};
+    let (_directory, mut app, context) = fixture();
+    click_text(&mut app, &context, "Français");
+    assert_eq!(crate::i18n::language(), Language::French);
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().language,
+        Some(Language::French)
+    );
+    let output = frame(&mut app, &context, 1100.0, Vec::new());
+    text_bounds(&output, "Paramètres");
+    click_text(&mut app, &context, "日本語");
+    let output = frame(&mut app, &context, 1100.0, Vec::new());
+    text_bounds(&output, "設定");
+    assert_eq!(
+        Settings::load(&app.settings_path).unwrap().language,
+        Some(Language::Japanese)
+    );
+}
+
+#[test]
 fn custom_vault_startup_control_stays_disabled_when_clicked() {
     let (_directory, mut app, context) = fixture();
     assert!(app.custom_path);

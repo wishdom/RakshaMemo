@@ -10,6 +10,7 @@ use rakshamemo::{
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{Dialog, Notepad, forget_editor_state, style};
+use crate::i18n::{self, fill, t};
 
 pub(super) struct PasswordChange {
     current: Zeroizing<String>,
@@ -45,13 +46,13 @@ impl PasswordChange {
     /// Why the form cannot be submitted yet, if anything.
     fn invalid(&self) -> Option<&'static str> {
         if self.current.is_empty() {
-            Some("Enter your current password.")
+            Some(t().enter_current_password)
         } else if self.new.chars().count() < 12 {
-            Some("Use at least 12 characters for the new password.")
+            Some(t().new_password_too_short)
         } else if *self.new != *self.confirm {
-            Some("The new passwords do not match yet.")
+            Some(t().new_passwords_do_not_match)
         } else if *self.new == *self.current {
-            Some("Choose a password different from the current one.")
+            Some(t().choose_different_password)
         } else {
             None
         }
@@ -88,42 +89,46 @@ impl Notepad {
                 self.store.as_mut().unwrap().apply_password_change(key)
             }) {
                 Ok(()) => {
-                    let mut status = "Master password changed".to_owned();
+                    let mut status = t().password_changed.to_owned();
                     if change.remove_versions {
                         match self.store.as_ref().unwrap().remove_versions() {
                             Ok(count) if count > 0 => {
-                                status = format!("{status}; {count} older backups removed");
+                                status = i18n::plural(count, t().password_changed_backups_removed);
                             }
                             Ok(_) => {}
                             Err(error) => {
-                                self.error = Some(format!(
-                                    "Password changed, but older backups could not be removed: {error:#}"
-                                ));
+                                self.error =
+                                    Some(fill(t().backups_not_removed, &[&format!("{error:#}")]));
                             }
                         }
                     }
                     self.status = status;
                     return true;
                 }
-                Err(error) => change.problem = Some(format!("{error:#}")),
+                Err(error) => change.problem = Some(i18n::describe(&error)),
             }
         }
 
-        ui.heading("Change master password");
-        ui.weak("Re-encrypts this vault. Exported copies keep their own password.");
+        let text = t();
+        ui.heading(text.change_password_title);
+        ui.weak(text.change_password_intro);
         ui.add_space(4.0);
         let working = change.working.is_some();
         let mut submit = false;
         let mut cancel = false;
         ui.add_enabled_ui(!working, |ui| {
-            let current = ui.add(password_field(&mut change.current, "Current password", "current"));
+            let current = ui.add(password_field(
+                &mut change.current,
+                text.current_password_hint,
+                "current",
+            ));
             if !std::mem::replace(&mut change.focused, true) {
                 current.request_focus();
             }
             if ui
                 .add(password_field(
                     &mut change.new,
-                    "New password (at least 12 characters)",
+                    text.new_password_hint,
                     "new",
                 ))
                 .changed()
@@ -133,18 +138,19 @@ impl Notepad {
             if let Some(strength) = &change.strength {
                 style::strength_meter(ui, strength);
             }
-            ui.add(password_field(&mut change.confirm, "Confirm new password", "confirm"));
-            ui.checkbox(
-                &mut change.remove_versions,
-                "Also delete older backups (they open with the current password)",
-            )
-            .on_hover_text("Recommended if someone else may know the current password. Permanent pre-import backups are kept.");
+            ui.add(password_field(
+                &mut change.confirm,
+                text.confirm_new_password_hint,
+                "confirm",
+            ));
+            ui.checkbox(&mut change.remove_versions, text.remove_old_backups)
+                .on_hover_text(text.remove_old_backups_hover);
             ui.add_space(4.0);
             let problem = change.invalid();
             ui.horizontal(|ui| {
-                cancel = ui.button("Cancel").clicked();
+                cancel = ui.button(text.cancel).clicked();
                 submit = style::primary(ui, |ui| {
-                    ui.add_enabled(problem.is_none(), egui::Button::new("Change password"))
+                    ui.add_enabled(problem.is_none(), egui::Button::new(text.change_password))
                 })
                 .clicked();
             });
@@ -180,14 +186,13 @@ impl Notepad {
                 });
                 change.working = Some(receiver);
             } else {
-                change.problem =
-                    Some("Save your current changes first; see the message above.".into());
+                change.problem = Some(text.save_changes_first.into());
             }
         }
         if change.working.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.weak("Checking your password and deriving the new key…");
+                ui.weak(text.deriving_new_key);
             });
         }
         if let Some(problem) = &change.problem {
@@ -200,16 +205,12 @@ impl Notepad {
 fn version_label(version: &BackupVersion) -> String {
     let when = version
         .saved_at
-        .map(|date| {
-            date.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d at %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|| "Unknown time".into());
+        .map(|date| i18n::date_time(&date.with_timezone(&chrono::Local)))
+        .unwrap_or_else(|| t().unknown_time.into());
     if version.previous_save {
-        format!("{when} · state before the latest save")
+        fill(t().version_before_save, &[&when])
     } else {
-        format!("{when} · saved version")
+        fill(t().version_saved, &[&when])
     }
 }
 
@@ -220,12 +221,13 @@ pub(super) fn versions_ui(
     versions: &[BackupVersion],
     selected: &mut Option<usize>,
 ) -> (bool, Option<Dialog>) {
-    ui.heading("Restore a previous version");
-    ui.label("Before saving, RakshaMemo keeps an encrypted copy of the previous state, plus one version every 30 minutes (the latest 20).");
-    ui.label("Restoring replaces your current notes and passwords once you enter the password that version was saved with. Your current vault is backed up first.");
+    let text = t();
+    ui.heading(text.restore_title);
+    ui.label(text.restore_explained);
+    ui.label(text.restore_how);
     ui.add_space(8.0);
     if versions.is_empty() {
-        ui.weak("No earlier versions yet. They appear after you make changes.");
+        ui.weak(text.no_versions);
     } else {
         egui::ScrollArea::vertical()
             .id_salt("backup_versions")
@@ -240,10 +242,10 @@ pub(super) fn versions_ui(
     let mut close = false;
     let mut next = None;
     ui.horizontal(|ui| {
-        close = ui.button("Cancel").clicked();
+        close = ui.button(text.cancel).clicked();
         let chosen = selected.and_then(|index| versions.get(index));
         if style::primary(ui, |ui| {
-            ui.add_enabled(chosen.is_some(), egui::Button::new("Restore…"))
+            ui.add_enabled(chosen.is_some(), egui::Button::new(text.restore_ellipsis))
         })
         .clicked()
             && let Some(version) = chosen
