@@ -4,6 +4,7 @@ version = "2.2.0"
 edition = "2024"
 rust-version = "1.99.0"
 description = "RakshaMemo: local encrypted notes and passwords, written in Rust"
+license = "MIT"
 
 # The app's file is RakshaMemo.exe (RakshaMemo on Linux and macOS); the
 # library keeps the conventional lowercase crate name, rakshamemo.

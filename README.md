@@ -110,3 +110,5 @@ cargo build --release --locked
 Interface translations live in `src/i18n.rs`. Check desktop behavior on the relevant operating system when changing startup, clipboard, display, or file-dialog features.
 
 </details>
+
+RakshaMemo is free and open-source software, available under the [MIT License](LICENSE).
