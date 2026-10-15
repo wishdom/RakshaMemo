@@ -6,9 +6,7 @@ RakshaMemo is a desktop app that keeps your notes and account details together i
 
 ## Download
 
-**Downloads are being prepared.** The links below will work once the first release is published.
-
-Choose your computer below. You do not need a GitHub account or any programming tools to use the app.
+Choose your computer below. You do not need any programming tools to use the app.
 
 | Your computer | Download |
 | --- | --- |
@@ -29,7 +27,9 @@ On a Mac, open **Apple menu → About This Mac** to check whether it lists an Ap
 **Keep your master password safe: there is no password recovery.** If you forget it, you cannot unlock your vault or backups made with that password.
 
 <details>
-<summary>Help opening the app on macOS or Linux</summary>
+<summary>Help opening the app</summary>
+
+The Windows download runs without an installer. It is not digitally signed, so Windows may show an unknown-publisher notice.
 
 The Mac downloads require **macOS 13 or newer**. They are not notarized by Apple, so macOS may block the first launch. If you trust this download, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445).
 
