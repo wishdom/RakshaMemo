@@ -168,8 +168,13 @@ mod tests {
         ctx.end_pass().textures_delta.clear();
     }
 
+    // This guards the Windows UI-face selection above. Native CJK fonts on
+    // other platforms have different line metrics and may deliberately draw
+    // the ellipsis at mid-line; those are not Windows UI-face regressions.
+    // Their shared Latin/CJK baseline is covered by the cross-platform test.
+    #[cfg(target_os = "windows")]
     #[test]
-    fn installed_face_centres_latin_text_and_keeps_ellipsis_on_the_baseline() {
+    fn windows_ui_face_centres_latin_text_and_keeps_ellipsis_on_the_baseline() {
         if !candidates().iter().any(|(path, _)| path.is_file()) {
             return;
         }
